@@ -33,7 +33,7 @@ class TrackEnvCfg(DirectRLEnvCfg):
     moment_scale = 0.01
     reset_tracking_error_threshold = 2.0  
     reset_height_threshold = 0.2  
-    debug_vis = True
+
 
     sim: SimulationCfg = SimulationCfg(
         dt= 1/100,
@@ -61,11 +61,10 @@ class TrackEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=5.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=5.0, replicate_physics=True)
 
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
-
 
 class TrackEnv(DirectRLEnv):
     cfg: TrackEnvCfg
@@ -78,9 +77,8 @@ class TrackEnv(DirectRLEnv):
         self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
         self._robot_weight = (self._robot_mass * self._gravity_magnitude).item()
 
-
         self.future_traj_steps = 4
-        self.traj_t0 = torch.pi / 2
+        self.traj_t0 = torch.zeros(self.num_envs, device=self.device)
         self.origin = torch.tensor([0., 0., 2.], device=self.device)
 
         action_dim = gym.spaces.flatdim(self.single_action_space)
@@ -91,6 +89,10 @@ class TrackEnv(DirectRLEnv):
 
         self._body_id = self._robot.find_bodies("body")[0]
 
+        self.init_rpy_dist = D.Uniform(
+            torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
+            torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
+        )
         # Randomization of the 3D lemniscate
         self.traj_c_dist = D.Uniform(
             torch.tensor(-0.6, device=self.device),
@@ -123,11 +125,8 @@ class TrackEnv(DirectRLEnv):
         }
 
         self.draw = _debug_draw.acquire_debug_draw_interface()
-        self.set_debug_vis(self.cfg.debug_vis)
-
 
     def _setup_scene(self):
-        print("setup scene")
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
 
@@ -141,17 +140,14 @@ class TrackEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        print("pre physic")
         self._actions = actions.clone().clamp(-1.0, 1.0)
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
         self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
 
     def _apply_action(self):
-        print("apply action")
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
     def _get_observations(self) -> dict:
-        print("get observ")
         self.target_pos[:] = self._compute_traj(self.future_traj_steps)
         self.rpos[:] = self.target_pos - self._robot.data.root_pos_w.unsqueeze(1)
 
@@ -170,7 +166,6 @@ class TrackEnv(DirectRLEnv):
 
 
     def _get_rewards(self) -> torch.Tensor:
-        print("get reward")
         distance = torch.norm(self.rpos[:, 0], dim=-1) 
         reward_pose = torch.exp(-1.2 * distance)  
 
@@ -194,21 +189,20 @@ class TrackEnv(DirectRLEnv):
 
     
     def _compute_traj(self, steps: int, env_ids=None, step_size: float=1.):
-        print("comp")
         if env_ids is None:
             env_ids = ...
 
         t = self.progress_buf[env_ids].unsqueeze(1) + step_size * torch.arange(steps, device=self.device)
-        t = self.traj_t0 + scale_time(self.traj_w[env_ids].unsqueeze(1) * t * 1) # Hardcoded for now, should change later
+        t = self.traj_t0.unsqueeze(1) + scale_time(self.traj_w[env_ids].unsqueeze(1) * t * 1) # Hardcoded for now, should change later
         traj_rot = self.traj_rot[env_ids].unsqueeze(1).expand(-1, t.shape[1], 4)
 
         target_pos = vmap(lemniscate)(t, self.traj_c[env_ids])
         target_pos = vmap(quat_rotate)(traj_rot, target_pos) * self.traj_scale[env_ids].unsqueeze(1)
 
-        return self.origin + target_pos
+        return self._terrain.env_origins[env_ids].unsqueeze(1) + target_pos + torch.tensor([0., 0., 2], device=self.device)
+
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-            print("get done")
             time_out = self.episode_length_buf >= self.max_episode_length - 1
             tracking_error = torch.norm(self.rpos[:, 0], dim=-1)
             tracking_error_exceeded = tracking_error > self.cfg.reset_tracking_error_threshold
@@ -224,7 +218,6 @@ class TrackEnv(DirectRLEnv):
             return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
-        print("reset idx ")
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
@@ -234,7 +227,6 @@ class TrackEnv(DirectRLEnv):
             extras[f"Episode_Reward/{key}"] = avg_sum / self.max_episode_length_s
             self._episode_sums[key][env_ids] = 0.0
 
-        # Termination stats
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
 
@@ -246,6 +238,22 @@ class TrackEnv(DirectRLEnv):
         self.traj_scale[env_ids] = self.traj_scale_dist.sample(env_ids.shape)
         traj_w = self.traj_w_dist.sample(env_ids.shape)
         self.traj_w[env_ids] = torch.randn_like(traj_w).sign() * traj_w 
+        self.traj_t0[env_ids] = torch.rand(len(env_ids), device=self.device) * 2 * torch.pi
+
+        t0 = self.traj_t0[env_ids]
+        traj_c = self.traj_c[env_ids]
+        traj_rot = self.traj_rot[env_ids]
+        traj_scale = self.traj_scale[env_ids]
+        origin = self._terrain.env_origins[env_ids]
+
+        pos = lemniscate(t0, traj_c)
+        pos = quat_rotate(traj_rot, pos)
+        pos = pos * traj_scale
+        pos = pos + origin
+        pos[:, 2] += 2.0 
+        spawn_pos = pos
+
+        rot = euler_to_quaternion(self.init_rpy_dist.sample(env_ids.shape))
 
         super()._reset_idx(env_ids)
 
@@ -256,51 +264,47 @@ class TrackEnv(DirectRLEnv):
 
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
-        default_root_state = self._robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self._terrain.env_origins[env_ids]
-        self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+        default_root_state = self._robot.data.default_root_state[env_ids] 
+
+        root_pose = torch.cat([spawn_pos, rot], dim=1)
+
+        self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        self.draw.clear_lines()
 
-        traj_vis = self._compute_traj(self.max_episode_length, env_ids)[0]
-        traj_vis = traj_vis +  self._terrain.env_origins[env_ids][0] 
-        point_list_0 = traj_vis[:-1].tolist()
-        point_list_1 = traj_vis[1:].tolist()
-        colors = [(1.0, 1.0, 1.0, 1.0) for _ in range(len(point_list_0))]
-        sizes = [1 for _ in range(len(point_list_0))]
-        self.draw.draw_lines(point_list_0, point_list_1, colors, sizes)
+        subset_size = 3
+        env_subset = env_ids[:subset_size]
+
+        if env_ids[0] == 0:
+            steps_to_draw = 200  
+            t = torch.linspace(0, 2 * torch.pi, steps_to_draw, device=self.device) 
+
+            env_id = env_ids[0]
+            traj_c = self.traj_c[env_id]
+            traj_rot = self.traj_rot[env_id]
+            traj_scale = self.traj_scale[env_id]
+            origin = self._terrain.env_origins[env_id]
+
+            traj_points = lemniscate(t, traj_c.unsqueeze(0)).squeeze(0)  
+            traj_points = quat_rotate(traj_rot.unsqueeze(0).expand(steps_to_draw, 4), traj_points)  
+            traj_points = traj_points * traj_scale.unsqueeze(0)  
+            traj_points = traj_points + origin.unsqueeze(0)  
+            traj_points[:, 2] += 2
+
+            point_list_0 = traj_points[:-1].tolist()
+            point_list_1 = traj_points[1:].tolist()
+            colors = [(1.0, 1.0, 1.0, 1.0)] * len(point_list_0)
+            sizes = [1] * len(point_list_0)
+
+            self.draw.clear_lines()
+            self.draw.draw_lines(point_list_0, point_list_1, colors, sizes)
 
 
-    def _set_debug_vis_impl(self, debug_vis: bool):
-        if debug_vis:
-            if not hasattr(self, "drone_marker"):
-                drone_marker_cfg = CUBOID_MARKER_CFG.copy()
-                drone_marker_cfg.markers["cuboid"].size = (0.1, 0.1, 0.1)
-                drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)
-                drone_marker_cfg.prim_path = "/Visuals/Command/drone_marker"
-                self.drone_marker = VisualizationMarkers(drone_marker_cfg)
 
-            self.drone_marker.set_visibility(True)
-        else:
-            if hasattr(self, "drone_marker"):
-                self.drone_marker.set_visibility(False)
 
-    def _debug_vis_callback(self, event):
-        drone_marker_positions = self._robot.data.root_pos_w.clone()
-        drone_marker_positions[:, 2] += 0.2  
-        traj_vis = self._compute_traj(self.max_episode_length, step_size=1.0)
-        self.drone_marker.visualize(traj_vis[:, 0, :])  
-        self.drone_marker.visualize(drone_marker_positions)
 
-        traj_vis = self._compute_traj(self.max_episode_length, env_ids=torch.zeros(1, dtype=torch.long, device=self.device))[0]
-        traj_vis = traj_vis + self._terrain.env_origins[0]
-        point_list_0 = traj_vis[:-1].tolist()
-        point_list_1 = traj_vis[1:].tolist()
-        colors = [(1.0, 1.0, 1.0, 1.0) for _ in range(len(point_list_0))]
-        sizes = [1 for _ in range(len(point_list_0))]
-        self.draw.draw_lines(point_list_0, point_list_1, colors, sizes)
+
 
 
 
