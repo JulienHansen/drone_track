@@ -4,6 +4,7 @@ from __future__ import annotations
 import torch
 from torch.func import vmap
 import torch.distributions as D
+import torch.nn.functional as F
 import gymnasium as gym
 from utils import *
 
@@ -21,6 +22,7 @@ from isaaclab.utils.math import subtract_frame_transforms
 from drone_assets.crazyflie import CRAZYFLIE_CFG
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
+from isaacsim.core.utils.viewports import set_camera_view
 
 
 @configclass
@@ -28,10 +30,11 @@ class TrackEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 1
     action_space = 4
-    observation_space = 25
+    observation_space = 22
     state_space = 0
-    moment_scale = 0.01
-    reset_tracking_error_threshold = 2.0  
+    moment_scale = 0.02
+    debug_vis = True 
+    reset_tracking_error_threshold = .5  
     reset_height_threshold = 0.2  
 
 
@@ -61,7 +64,7 @@ class TrackEnvCfg(DirectRLEnvCfg):
         debug_vis=False,
     )
 
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=5.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
@@ -123,7 +126,7 @@ class TrackEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, device=self.device)
             for key in ["reward_pose", "reward_effort" ,"reward_up"]
         }
-
+        self.set_debug_vis(self.cfg.debug_vis)
         self.draw = _debug_draw.acquire_debug_draw_interface()
 
     def _setup_scene(self):
@@ -151,40 +154,49 @@ class TrackEnv(DirectRLEnv):
         self.target_pos[:] = self._compute_traj(self.future_traj_steps)
         self.rpos[:] = self.target_pos - self._robot.data.root_pos_w.unsqueeze(1)
 
+        t = (self.progress_buf / self.max_episode_length).unsqueeze(-1)
+
+        x = self._robot.data.root_pos_w[0]
+        set_camera_view(
+                eye=x.cpu() + torch.as_tensor(self.cfg.viewer.eye),
+                target=x.cpu() + torch.as_tensor(self.cfg.viewer.lookat)
+            )
+
         obs = torch.cat(
             [
-                self.rpos.flatten(start_dim=1),  # shape: [num_envs, 3 * future_traj_steps]
+                self.rpos.flatten(start_dim=1),
+                t,
                 self._robot.data.root_lin_vel_b,
                 self._robot.data.root_ang_vel_b,
                 self._robot.data.projected_gravity_b,
-                self._robot.data.root_state_w[:, 3:7],  # quaternion
             ],
             dim=-1,
         )
         observations = {"policy": obs}
         return observations
 
-
     def _get_rewards(self) -> torch.Tensor:
-        distance = torch.norm(self.rpos[:, 0], dim=-1) 
-        reward_pose = torch.exp(-1.2 * distance)  
+        distance = torch.norm(self.rpos[:, 0], dim=-1)
+        reward_pose = torch.exp(-1.2 * distance)
 
         tiltage = torch.abs(1 - self._robot.data.projected_gravity_b[:, 2])
         reward_up = 0.5 / (1.0 + torch.square(tiltage))
 
-        effort = self._actions[:, 0]  # if normalized thrust
-        reward_effort = 0.02 * torch.exp(-effort) 
+        effort = self._actions[:, 0]
+        reward_effort = 0.02 * torch.exp(-effort)
 
-        reward = reward_pose + reward_pose * reward_up + reward_effort
-        rewards = {
-            "reward_pose": reward_pose,
-            "reward_up": reward_up,
-            "reward_effort": reward_effort,
-        }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        for key, value in rewards.items():
-            self._episode_sums[key] += value
+        drone_vel_w = self._robot.data.root_lin_vel_w
+        target_direction = F.normalize(self.target_pos[:, 1] - self.target_pos[:, 0], dim=-1)
+        progress = torch.sum(drone_vel_w * target_direction, dim=-1)
+        reward_progress = torch.relu(progress) * 0.1 
+        reward = reward_pose + (reward_pose * reward_up) + reward_effort + reward_progress
 
+        self._episode_sums["reward_pose"] += reward_pose
+        self._episode_sums["reward_up"] += reward_up
+        self._episode_sums["reward_effort"] += reward_effort
+        if "reward_progress" not in self._episode_sums:
+            self._episode_sums["reward_progress"] = torch.zeros_like(self._episode_sums["reward_pose"])
+        self._episode_sums["reward_progress"] += reward_progress
         return reward
 
     
@@ -253,7 +265,27 @@ class TrackEnv(DirectRLEnv):
         pos[:, 2] += 2.0 
         spawn_pos = pos
 
-        rot = euler_to_quaternion(self.init_rpy_dist.sample(env_ids.shape))
+        t0 = self.traj_t0[env_ids]
+        traj_c = self.traj_c[env_ids]
+        traj_rot = self.traj_rot[env_ids]
+        traj_scale = self.traj_scale[env_ids]
+
+        epsilon = 1e-2
+        traj_pos_p = lemniscate(t0 + epsilon, traj_c)
+        traj_pos_m = lemniscate(t0 - epsilon, traj_c)
+        tangent = (traj_pos_p - traj_pos_m) / (2 * epsilon)
+
+
+        tangent = quat_rotate(traj_rot, tangent)
+        tangent = tangent * traj_scale
+        forward = F.normalize(tangent, dim=-1)  
+
+        global_up = torch.tensor([0., 0., 1.], device=self.device).expand_as(forward)
+        right = F.normalize(torch.cross(global_up, forward, dim=-1), dim=-1)
+        up = torch.cross(forward, right, dim=-1)
+
+        rot_mat = torch.stack([forward, right, up], dim=-1) 
+        rot = rotation_matrix_to_quaternion(rot_mat)
 
         super()._reset_idx(env_ids)
 
@@ -271,10 +303,6 @@ class TrackEnv(DirectRLEnv):
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
-
-
-        subset_size = 3
-        env_subset = env_ids[:subset_size]
 
         if env_ids[0] == 0:
             steps_to_draw = 200  
@@ -299,6 +327,23 @@ class TrackEnv(DirectRLEnv):
 
             self.draw.clear_lines()
             self.draw.draw_lines(point_list_0, point_list_1, colors, sizes)
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        if debug_vis:
+
+            drone_marker_cfg = CUBOID_MARKER_CFG.copy()
+            drone_marker_cfg.markers["cuboid"].size = (0.1,0.1,0.1)
+            drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)
+            drone_marker_cfg.prim_path = "/Visuals/Command/drone_marker"
+            self.drone_marker = VisualizationMarkers(drone_marker_cfg)
+            self.drone_marker.set_visibility(True)
+        else:
+
+            self.drone_marker.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        drone_marker_positions = self._robot.data.root_pos_w.clone()
+        self.drone_marker.visualize(drone_marker_positions)
 
 
 
