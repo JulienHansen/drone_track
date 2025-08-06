@@ -84,7 +84,7 @@ class TrackAgent:
         if base_cfg is not None:
             cfg.update(base_cfg)
 
-        cfg["rollouts"] = 24
+        cfg["rollouts"] = 256
         cfg["learning_epochs"] = 5
         cfg["mini_batches"] = 6
         cfg["discount_factor"] = 0.99
@@ -132,10 +132,11 @@ class TrackAgent:
 
     def _create_memory(self):
         print(Fore.CYAN + "[INFO] Creating Memory..." + Style.RESET_ALL)
+        # The memory size should match the number of rollouts
         memory = RandomMemory(memory_size=self.cfg["rollouts"],
-                              num_envs=self.num_envs,
-                              device=self.device,
-                              replacement=False)
+                            num_envs=self.num_envs,
+                            device=self.device,
+                            replacement=False)
         print(Fore.GREEN + "[INFO] Memory Created." + Style.RESET_ALL)
         return memory
 
