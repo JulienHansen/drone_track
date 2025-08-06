@@ -59,3 +59,39 @@ def quat_rotate(q: torch.Tensor, v: torch.Tensor):
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
     c = q_vec * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1) * 2.0
     return a + b + c
+
+def rotation_matrix_to_quaternion(m: torch.Tensor) -> torch.Tensor:
+    """
+    Convert batch of 3x3 rotation matrices to quaternions [w, x, y, z]
+    """
+    r = m
+    q = torch.zeros((r.shape[0], 4), device=r.device)
+    trace = r[:, 0, 0] + r[:, 1, 1] + r[:, 2, 2]
+    positive = trace > 0
+
+    # Trace positive
+    s = torch.sqrt(trace[positive] + 1.0) * 2
+    q[positive, 0] = 0.25 * s
+    q[positive, 1] = (r[positive, 2, 1] - r[positive, 1, 2]) / s
+    q[positive, 2] = (r[positive, 0, 2] - r[positive, 2, 0]) / s
+    q[positive, 3] = (r[positive, 1, 0] - r[positive, 0, 1]) / s
+
+    # Trace non-positive
+    negative = ~positive
+    r_neg = r[negative]
+    diagonals = torch.stack([r_neg[:, 0, 0], r_neg[:, 1, 1], r_neg[:, 2, 2]], dim=1)
+    i = torch.argmax(diagonals, dim=1)
+
+    for j in range(3):
+        idx = (i == j).nonzero(as_tuple=True)[0]
+        if idx.numel() == 0:
+            continue
+        selected = r_neg[idx]
+        s = torch.sqrt(1.0 + selected[:, j, j] - selected[:, (j+1)%3, (j+1)%3] - selected[:, (j+2)%3, (j+2)%3]) * 2
+        q_idx = torch.where(negative)[0][idx]
+        q[q_idx, (j+1)%4] = 0.25 * s
+        q[q_idx, 0] = (selected[:, (j+2)%3, (j+1)%3] - selected[:, (j+1)%3, (j+2)%3]) / s
+        q[q_idx, (j+2)%4] = (selected[:, j, (j+1)%3] + selected[:, (j+1)%3, j]) / s
+        q[q_idx, (j+3)%4] = (selected[:, j, (j+2)%3] + selected[:, (j+2)%3, j]) / s
+
+    return q
