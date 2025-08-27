@@ -31,7 +31,7 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
-from track_env import TrackEnv, TrackEnvCfg
+from envs.track_env import TrackEnv, TrackEnvCfg
 from algos.ppo import TrackAgent
 
 
@@ -53,7 +53,7 @@ def main():
     if args_cli.task not in gym.registry:
         gym.register(
             id=args_cli.task,
-            entry_point="track_env:TrackEnv",
+            entry_point="envs.track_env:TrackEnv",
             kwargs={'cfg': env_cfg},
             disable_env_checker=True
         )
