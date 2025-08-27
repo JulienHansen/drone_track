@@ -24,9 +24,20 @@ from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
 
+gate_features = [
+    ((0.0, -3.0, 4.0),(0.0, 0.0, 0.0)),
+    ((-1.5, -1.5, 4.0),(0.0, 0.0, torch.pi/2)),
+    ((0.0, 0.0, 4.0),(0.0, 0.0, 0.0)),
+    ((1.5, 1.5, 4.0),(0.0, 0.0, torch.pi/2)),
+    ((0.0, 3.0, 4.0),(0.0, 0.0, 0.0)),
+    ((-1.5, 1.5, 4.0),(0.0, 0.0, torch.pi/2)),
+    ((0.0, 0.0, 4.0),(0.0, 0.0, 0.0)),
+    ((1.5, -1.5, 4.0),(0.0, 0.0, torch.pi/2)),
+]
+
 
 @configclass
-class TrackEnvCfg(DirectRLEnvCfg):
+class EightEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 1
     action_space = 4
@@ -69,10 +80,10 @@ class TrackEnvCfg(DirectRLEnvCfg):
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
 
-class TrackEnv(DirectRLEnv):
-    cfg: TrackEnvCfg
+class EightEnv(DirectRLEnv):
+    cfg: EightEnvCfg
 
-    def __init__(self, cfg: TrackEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: EightEnvCfg, render_mode: str | None = None, **kwargs):
 
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -133,6 +144,20 @@ class TrackEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
 
+        for idx, (position, angle) in enumerate(gate_features, start=1):
+            gate_path = f"/World/Gate{idx}"
+            spawn_racing_gate(
+                gate_path,
+                center=position,
+                inner_size=(1.5, 1.5),
+                bar_thickness=0.06,
+                depth=0.06,
+                color=(0.1, 0.7, 1.0),
+                kinematic=True,
+                collision=True,
+                rotation_euler_xyz=angle
+    )
+
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -158,8 +183,7 @@ class TrackEnv(DirectRLEnv):
 
         x = self._robot.data.root_pos_w[0]
         set_camera_view(
-                eye=x.cpu() + torch.as_tensor(self.cfg.viewer.eye),
-                target=x.cpu() + torch.as_tensor(self.cfg.viewer.lookat)
+                [3.0, -10, 10.0], [0.0, 0.0, 4.0]
             )
 
         obs = torch.cat(

@@ -31,7 +31,7 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
-from envs.track_env import TrackEnv, TrackEnvCfg
+from envs.eight_track import EightEnv, EightEnvCfg
 from algos.ppo import TrackAgent
 
 
@@ -45,7 +45,7 @@ def main():
         random.seed(args_cli.seed)
 
     # Initialize environment
-    env_cfg = TrackEnvCfg()
+    env_cfg = EightEnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
     if not args_cli.headless:
         env_cfg.sim.render_interval = 1
@@ -53,7 +53,7 @@ def main():
     if args_cli.task not in gym.registry:
         gym.register(
             id=args_cli.task,
-            entry_point="envs.track_env:TrackEnv",
+            entry_point="envs.eight_track:EightEnv",
             kwargs={'cfg': env_cfg},
             disable_env_checker=True
         )

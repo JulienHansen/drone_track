@@ -1,4 +1,8 @@
 import torch
+import isaacsim.core.utils.prims as prim_utils
+import isaaclab.sim as sim_utils
+# Required for Euler to Quaternion conversion
+from scipy.spatial.transform import Rotation
 
 def quaternion_to_euler(quaternion: torch.Tensor) -> torch.Tensor:
 
@@ -95,3 +99,53 @@ def rotation_matrix_to_quaternion(m: torch.Tensor) -> torch.Tensor:
         q[q_idx, (j+3)%4] = (selected[:, j, (j+2)%3] + selected[:, (j+2)%3, j]) / s
 
     return q
+
+
+def spawn_racing_gate(
+    prim_path: str,
+    center=(0.0, 0.0, 1.5),
+    inner_size=(1.5, 1.2),
+    bar_thickness=0.05,
+    depth=0.05,
+    color=(0.0, 0.5, 1.0),
+    kinematic=True,
+    collision=True,
+    # This now correctly accepts Euler angles in radians (roll, pitch, yaw)
+    rotation_euler_xyz=(0.0, 0.0, 0.0),
+):
+    # 1. Convert Euler angles to a quaternion
+    # Scipy creates a quaternion in (x, y, z, w) format
+    rot_quat_xyzw = Rotation.from_euler('xyz', rotation_euler_xyz, degrees=False).as_quat()
+    # Isaac Sim expects quaternion in (w, x, y, z) format, so we reorder it
+    rot_quat_wxyz = (rot_quat_xyzw[3], rot_quat_xyzw[0], rot_quat_xyzw[1], rot_quat_xyzw[2])
+
+    # 2. Create the parent Xform with the correct 'orientation' parameter
+    prim_utils.create_prim(prim_path, "Xform", translation=center, orientation=rot_quat_wxyz)
+
+    w, h = inner_size
+    
+    # materials / physics
+    mat = sim_utils.PreviewSurfaceCfg(diffuse_color=color)
+    rigid = sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=kinematic) if collision else None
+    coll  = sim_utils.CollisionPropertiesCfg() if collision else None
+
+    def bar(name, size_xyz, pos_xyz):
+        cfg = sim_utils.CuboidCfg(
+            size=size_xyz,
+            visual_material=mat,
+            rigid_props=rigid,
+            collision_props=coll,
+        )
+        cfg.func(f"{prim_path}/{name}", cfg, translation=pos_xyz)
+
+    half_w = w * 0.5
+    half_h = h * 0.5
+
+    # The rest of the function is the same...
+    # vertical bars
+    bar("left",  (depth, bar_thickness, h), (0.0, -half_w, 0.0))
+    bar("right", (depth, bar_thickness, h), (0.0, half_w, 0.0))
+
+    # horizontal bars
+    bar("top",    (depth, w, bar_thickness), (0.0, 0.0, half_h))
+    bar("bottom", (depth, w, bar_thickness), (0.0, 0.0, -half_h))
