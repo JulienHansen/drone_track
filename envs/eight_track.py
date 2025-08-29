@@ -35,6 +35,17 @@ gate_features = [
     ((1.5, -1.5, 4.0),(0.0, 0.0, torch.pi/2)),
 ]
 
+starting_position = [
+    (1.0, -3.0, 4.0),
+    (-1.5, -2.5 , 4.0),
+    (-1.0, 0.0, 4.0),
+    (1.5, 0.5, 4.0),
+    (1.0, 3.0, 4.0),
+    (-1.5, 2.5, 4.0),
+    (1.5, -0.5, 4.0),
+]
+
+
 
 @configclass
 class EightEnvCfg(DirectRLEnvCfg):
@@ -94,43 +105,12 @@ class EightEnv(DirectRLEnv):
         self.future_traj_steps = 4
         self.traj_t0 = torch.zeros(self.num_envs, device=self.device)
         self.origin = torch.tensor([0., 0., 2.], device=self.device)
-
         action_dim = gym.spaces.flatdim(self.single_action_space)
         self._actions = torch.zeros(self.num_envs, action_dim, device=self.device)
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-
         self._body_id = self._robot.find_bodies("body")[0]
-
-        self.init_rpy_dist = D.Uniform(
-            torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
-            torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
-        )
-        # Randomization of the 3D lemniscate
-        self.traj_c_dist = D.Uniform(
-            torch.tensor(-0.6, device=self.device),
-            torch.tensor(0.6, device=self.device)
-        )
-        self.traj_scale_dist = D.Uniform(
-            torch.tensor([1.8, 1.8, 1.], device=self.device),
-            torch.tensor([3.2, 3.2, 1.5], device=self.device)
-        )
-        self.traj_rpy_dist = D.Uniform(
-            torch.tensor([0., 0., 0.], device=self.device) * torch.pi,
-            torch.tensor([0., 0., 2.], device=self.device) * torch.pi
-        )
-        self.traj_w_dist = D.Uniform(
-            torch.tensor(0.8, device=self.device),
-            torch.tensor(1.1, device=self.device)
-        )
-
-        self.traj_c = torch.zeros(self.num_envs, device=self.device)
-        self.traj_rot = torch.zeros(self.num_envs, 4, device=self.device)
-        self.traj_scale = torch.zeros(self.num_envs, 3, device=self.device)
-        self.traj_w = torch.ones(self.num_envs, device=self.device)
-
-        self.target_pos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
         self.rpos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
 
         self._episode_sums = {
@@ -176,9 +156,7 @@ class EightEnv(DirectRLEnv):
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
     def _get_observations(self) -> dict:
-        self.target_pos[:] = self._compute_traj(self.future_traj_steps)
-        self.rpos[:] = self.target_pos - self._robot.data.root_pos_w.unsqueeze(1)
-
+        #TODO: This needs to be modified
         t = (self.progress_buf / self.max_episode_length).unsqueeze(-1)
 
         x = self._robot.data.root_pos_w[0]
@@ -200,56 +178,17 @@ class EightEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        distance = torch.norm(self.rpos[:, 0], dim=-1)
-        reward_pose = torch.exp(-1.2 * distance)
-
-        tiltage = torch.abs(1 - self._robot.data.projected_gravity_b[:, 2])
-        reward_up = 0.5 / (1.0 + torch.square(tiltage))
-
-        effort = self._actions[:, 0]
-        reward_effort = 0.02 * torch.exp(-effort)
-
-        drone_vel_w = self._robot.data.root_lin_vel_w
-        target_direction = F.normalize(self.target_pos[:, 1] - self.target_pos[:, 0], dim=-1)
-        progress = torch.sum(drone_vel_w * target_direction, dim=-1)
-        reward_progress = torch.relu(progress) * 0.1 
-        reward = reward_pose + (reward_pose * reward_up) + reward_effort + reward_progress
-
-        self._episode_sums["reward_pose"] += reward_pose
-        self._episode_sums["reward_up"] += reward_up
-        self._episode_sums["reward_effort"] += reward_effort
-        if "reward_progress" not in self._episode_sums:
-            self._episode_sums["reward_progress"] = torch.zeros_like(self._episode_sums["reward_pose"])
-        self._episode_sums["reward_progress"] += reward_progress
+        reward = torch.zeros(self.num_envs, 1, device=self.device)
         return reward
 
     
-    def _compute_traj(self, steps: int, env_ids=None, step_size: float=1.):
-        if env_ids is None:
-            env_ids = ...
-
-        t = self.progress_buf[env_ids].unsqueeze(1) + step_size * torch.arange(steps, device=self.device)
-        t = self.traj_t0.unsqueeze(1) + scale_time(self.traj_w[env_ids].unsqueeze(1) * t * 1) # Hardcoded for now, should change later
-        traj_rot = self.traj_rot[env_ids].unsqueeze(1).expand(-1, t.shape[1], 4)
-
-        target_pos = vmap(lemniscate)(t, self.traj_c[env_ids])
-        target_pos = vmap(quat_rotate)(traj_rot, target_pos) * self.traj_scale[env_ids].unsqueeze(1)
-
-        return self._terrain.env_origins[env_ids].unsqueeze(1) + target_pos + torch.tensor([0., 0., 2], device=self.device)
-
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
             time_out = self.episode_length_buf >= self.max_episode_length - 1
-            tracking_error = torch.norm(self.rpos[:, 0], dim=-1)
-            tracking_error_exceeded = tracking_error > self.cfg.reset_tracking_error_threshold
-
             height_too_low = self._robot.data.root_pos_w[:, 2] < self.cfg.reset_height_threshold
             height_too_high = self._robot.data.root_pos_w[:, 2] > 200.0 
 
-            died = torch.logical_or(
-                tracking_error_exceeded,
-                torch.logical_or(height_too_low, height_too_high)
-            )
+            died = torch.logical_or(height_too_low, height_too_high)
+        
 
             return died, time_out
 
@@ -265,52 +204,8 @@ class EightEnv(DirectRLEnv):
 
         extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-
         self.extras["log"] = extras
         self._robot.reset(env_ids)
-
-        self.traj_c[env_ids] = self.traj_c_dist.sample(env_ids.shape)
-        self.traj_rot[env_ids] = euler_to_quaternion(self.traj_rpy_dist.sample(env_ids.shape))
-        self.traj_scale[env_ids] = self.traj_scale_dist.sample(env_ids.shape)
-        traj_w = self.traj_w_dist.sample(env_ids.shape)
-        self.traj_w[env_ids] = torch.randn_like(traj_w).sign() * traj_w 
-        self.traj_t0[env_ids] = torch.rand(len(env_ids), device=self.device) * 2 * torch.pi
-
-        t0 = self.traj_t0[env_ids]
-        traj_c = self.traj_c[env_ids]
-        traj_rot = self.traj_rot[env_ids]
-        traj_scale = self.traj_scale[env_ids]
-        origin = self._terrain.env_origins[env_ids]
-
-        pos = lemniscate(t0, traj_c)
-        pos = quat_rotate(traj_rot, pos)
-        pos = pos * traj_scale
-        pos = pos + origin
-        pos[:, 2] += 2.0 
-        spawn_pos = pos
-
-        t0 = self.traj_t0[env_ids]
-        traj_c = self.traj_c[env_ids]
-        traj_rot = self.traj_rot[env_ids]
-        traj_scale = self.traj_scale[env_ids]
-
-        epsilon = 1e-2
-        traj_pos_p = lemniscate(t0 + epsilon, traj_c)
-        traj_pos_m = lemniscate(t0 - epsilon, traj_c)
-        tangent = (traj_pos_p - traj_pos_m) / (2 * epsilon)
-
-
-        tangent = quat_rotate(traj_rot, tangent)
-        tangent = tangent * traj_scale
-        forward = F.normalize(tangent, dim=-1)  
-
-        global_up = torch.tensor([0., 0., 1.], device=self.device).expand_as(forward)
-        right = F.normalize(torch.cross(global_up, forward, dim=-1), dim=-1)
-        up = torch.cross(forward, right, dim=-1)
-
-        rot_mat = torch.stack([forward, right, up], dim=-1) 
-        rot = rotation_matrix_to_quaternion(rot_mat)
-
         super()._reset_idx(env_ids)
 
         if len(env_ids) == self.num_envs:
@@ -320,53 +215,39 @@ class EightEnv(DirectRLEnv):
 
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
-        default_root_state = self._robot.data.default_root_state[env_ids] 
+        default_root_state = self._robot.data.default_root_state[env_ids]
 
-        root_pose = torch.cat([spawn_pos, rot], dim=1)
+        root_pose = torch.zeros((len(env_ids), 7), device=self.device)
+
+        num_starts = len(starting_position)
+
+        for i, env_id in enumerate(env_ids):
+            # 1) Random selection among the starting positions
+            start_id = torch.randint(0, num_starts, (1,), device=self.device).item()
+            sx, sy, sz = starting_position[start_id]
+
+            # 2) Finding the closest gates near this starting positions
+            min_dist = float("inf")
+            closest_gate_id = 0
+            for gate_id, (gate_pos, _) in enumerate(gate_features):
+                gx, gy, gz = gate_pos
+                dist = (sx - gx) ** 2 + (sy - gy) ** 2 # No need for the third dimensions
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_gate_id = gate_id
+
+            # 3) Orientation of the nearest gates
+            _, gate_rot = gate_features[closest_gate_id]
+            yaw = torch.tensor(gate_rot[2], device=self.device)
+            qw = torch.cos(yaw / 2)
+            qz = torch.sin(yaw / 2)
+            spawn_quat = torch.tensor([qw, 0.0, 0.0, qz], device=self.device)
+
+            # 5) Assigner la position et l'orientation au drone
+            root_pose[i, :3] = torch.tensor([sx, sy, sz], device=self.device)
+            root_pose[i, 3:] = spawn_quat
 
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
-
-        if env_ids[0] == 0:
-            steps_to_draw = 200  
-            t = torch.linspace(0, 2 * torch.pi, steps_to_draw, device=self.device) 
-
-            env_id = env_ids[0]
-            traj_c = self.traj_c[env_id]
-            traj_rot = self.traj_rot[env_id]
-            traj_scale = self.traj_scale[env_id]
-            origin = self._terrain.env_origins[env_id]
-
-            traj_points = lemniscate(t, traj_c.unsqueeze(0)).squeeze(0)  
-            traj_points = quat_rotate(traj_rot.unsqueeze(0).expand(steps_to_draw, 4), traj_points)  
-            traj_points = traj_points * traj_scale.unsqueeze(0)  
-            traj_points = traj_points + origin.unsqueeze(0)  
-            traj_points[:, 2] += 2
-
-            point_list_0 = traj_points[:-1].tolist()
-            point_list_1 = traj_points[1:].tolist()
-            colors = [(1.0, 1.0, 1.0, 1.0)] * len(point_list_0)
-            sizes = [1] * len(point_list_0)
-
-            self.draw.clear_lines()
-            self.draw.draw_lines(point_list_0, point_list_1, colors, sizes)
-
-    def _set_debug_vis_impl(self, debug_vis: bool):
-        if debug_vis:
-
-            drone_marker_cfg = CUBOID_MARKER_CFG.copy()
-            drone_marker_cfg.markers["cuboid"].size = (0.1,0.1,0.1)
-            drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)
-            drone_marker_cfg.prim_path = "/Visuals/Command/drone_marker"
-            self.drone_marker = VisualizationMarkers(drone_marker_cfg)
-            self.drone_marker.set_visibility(True)
-        else:
-
-            self.drone_marker.set_visibility(False)
-
-    def _debug_vis_callback(self, event):
-        drone_marker_positions = self._robot.data.root_pos_w.clone()
-        self.drone_marker.visualize(drone_marker_positions)
-
 
