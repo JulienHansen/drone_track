@@ -147,6 +147,8 @@ class EightEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+
+    # Currently working on the new physic model i will try to not destroyed abything cut i cannot promise 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
@@ -178,6 +180,7 @@ class EightEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
+        #TODO: This need to be implemented
         reward = torch.zeros(self.num_envs, 1, device=self.device)
         return reward
 

@@ -22,9 +22,9 @@ class DroneDynamics:
         self.sigma_tau = torch.empty(self.num_envs, 1, device=self.device)
         
         # --- Fixed Parameters ---
-        self.kappa = torch.full((self.num_envs, 1), 0.02, device=self.device)
+        self.kappa = torch.full((self.num_envs, 1), 0.01, device=self.device)
         self.max_omega = 1600.0 # TODO: Aucune idee de la valeur, j'ai un peu chercher mais pas sur 
-
+        # TODO: This needs to be modified 
 
         self.prop_speeds = torch.zeros(self.num_envs, 4, device=self.device)
         self.f_res = torch.zeros(self.num_envs, 3, device=self.device)
@@ -88,7 +88,6 @@ class DroneDynamics:
         # Petite zone de test en dessous afin de tester tout ca.
 
 
-        
         # --- 1. Motor Dynamics (Eq. 5) --- 
         omega_ss = actions * self.max_omega
         dot_omega = (omega_ss - self.prop_speeds) / self.kappa
