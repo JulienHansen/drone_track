@@ -1,0 +1,129 @@
+<?xml version="1.0" ?>
+<robot name="quadrotor">
+
+  <!-- ==== Main frame ==== -->
+  <link name="drone_body">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/Drone_frame_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/Drone_frame_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.631"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.00233681" ixy="0" ixz="0" iyy="0.00240461" iyz="0" izz="0.003746"/>
+    </inertial>
+  </link> 
+
+  <!-- ==== Propellers ==== -->
+  <link name="propeller_1">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.006"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-8" iyy="5.0e-6" izz="5.0e-6" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <link name="propeller_2">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.006"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-8" iyy="5.0e-6" izz="5.0e-6" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <link name="propeller_3">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.006"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-8" iyy="5.0e-6" izz="5.0e-6" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <link name="propeller_4">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/Propeller_mesh.dae" scale="0.0006 0.0006 0.0006"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.006"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-8" iyy="5.0e-6" izz="5.0e-6" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- ==== Propeller joints ==== -->
+  <joint name="propeller_4_joint" type="revolute">
+    <parent link="drone_body"/>
+    <child link="propeller_4"/>
+    <origin xyz="0.0835 0.111 0.029" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0.1" velocity="50"/>
+  </joint>
+
+  <joint name="propeller_2_joint" type="revolute">
+    <parent link="drone_body"/>
+    <child link="propeller_2"/>
+    <origin xyz="0.0835 -0.111 0.029" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0.1" velocity="50"/>
+  </joint>
+
+  <joint name="propeller_3_joint" type="revolute">
+    <parent link="drone_body"/>
+    <child link="propeller_3"/>
+    <origin xyz="-0.0835 0.111 0.029" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0.1" velocity="50"/>
+  </joint>
+
+  <joint name="propeller_1_joint" type="revolute">
+    <parent link="drone_body"/>
+    <child link="propeller_1"/>
+    <origin xyz="-0.0835 -0.111 0.029" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0.1" velocity="50"/>
+  </joint>
+
+</robot>

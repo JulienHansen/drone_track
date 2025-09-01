@@ -20,6 +20,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
 from drone_assets.crazyflie import CRAZYFLIE_CFG
+from drone_assets.Custom_drone import CUSTOM_DRONE_CFG
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
@@ -88,7 +89,7 @@ class EightEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
-    robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot: ArticulationCfg = CUSTOM_DRONE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
 
 class EightEnv(DirectRLEnv):
@@ -110,7 +111,7 @@ class EightEnv(DirectRLEnv):
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self._body_id = self._robot.find_bodies("body")[0]
+        self._body_id = self._robot.find_bodies("drone_body")[0]
         self.rpos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
 
         self._episode_sums = {
@@ -123,6 +124,8 @@ class EightEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
+        
+
 
         for idx, (position, angle) in enumerate(gate_features, start=1):
             gate_path = f"/World/Gate{idx}"
