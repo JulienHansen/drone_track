@@ -19,8 +19,11 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
+
 from drone_assets.crazyflie import CRAZYFLIE_CFG
-from drone_assets.Custom_drone import CUSTOM_DRONE_CFG
+
+#from drone_assets.Custom_drone import CUSTOM_DRONE_CFG
+
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
@@ -53,12 +56,12 @@ class EightEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 1
     action_space = 4
-    observation_space = 22
+    observation_space = 20
     state_space = 0
     moment_scale = 0.02
     debug_vis = True 
     reset_tracking_error_threshold = .5  
-    reset_height_threshold = 0.2  
+    reset_height_threshold = 0.15  
 
 
     sim: SimulationCfg = SimulationCfg(
@@ -89,7 +92,7 @@ class EightEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
-    robot: ArticulationCfg = CUSTOM_DRONE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 1.9
 
 class EightEnv(DirectRLEnv):
@@ -125,8 +128,6 @@ class EightEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
         
-
-
         for idx, (position, angle) in enumerate(gate_features, start=1):
             gate_path = f"/World/Gate{idx}"
             spawn_racing_gate(
@@ -161,34 +162,115 @@ class EightEnv(DirectRLEnv):
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
     def _get_observations(self) -> dict:
-        #TODO: This needs to be modified
-        t = (self.progress_buf / self.max_episode_length).unsqueeze(-1)
+        # Get drone state
+        drone_pos = self._robot.data.root_link_pos_w        # [num_envs, 3]
+        drone_quat = self._robot.data.root_link_quat_w       # [num_envs, 4]
+        lin_vel = self._robot.data.root_lin_vel_b      # [num_envs, 3]
+        ang_vel = self._robot.data.root_ang_vel_b      # [num_envs, 3]
+        drone_euler = quaternion_to_euler(drone_quat)
+        rotor_cmds = (self._actions + 1.0) / 2.0      # normalize [-1, 1] -> [0, 1]
 
-        x = self._robot.data.root_pos_w[0]
-        set_camera_view(
-                [3.0, -10, 10.0], [0.0, 0.0, 4.0]
-            )
+        # Build tensor of gate positions
+        gate_positions = torch.tensor([g[0] for g in gate_features], device=self.device)
+        diff = gate_positions.unsqueeze(0) - drone_pos.unsqueeze(1)
+        dists = torch.norm(diff, dim=2)
 
+        # Find current and next gate indices
+        curr_gate_ids = torch.argmin(dists, dim=1)
+        next_gate_ids = (curr_gate_ids + 1) % len(gate_features)
+
+        # Current & next gate world positions
+        curr_gate_pos = gate_positions[curr_gate_ids]
+        next_gate_pos = gate_positions[next_gate_ids]
+
+         # Use Isaac Lab utility to compute relative positions in drone frame
+        curr_gate_rel_b, _ = subtract_frame_transforms(
+            drone_pos, drone_quat,
+            curr_gate_pos, torch.zeros_like(drone_quat)
+        )
+        next_gate_rel_b, _ = subtract_frame_transforms(
+            drone_pos, drone_quat,
+            next_gate_pos, torch.zeros_like(drone_quat)
+        )
+
+        # Get gate orientations (yaw only)
+        gate_orientations = torch.tensor([g[1] for g in gate_features], device=self.device)
+        next_gate_yaw = gate_orientations[next_gate_ids][:, 2].unsqueeze(1)
+
+        # Final observation vector (20 dimensions)
         obs = torch.cat(
             [
-                self.rpos.flatten(start_dim=1),
-                t,
-                self._robot.data.root_lin_vel_b,
-                self._robot.data.root_ang_vel_b,
-                self._robot.data.projected_gravity_b,
+                curr_gate_rel_b,             # p_g^i
+                lin_vel,                     # v_g^i
+                drone_euler,
+                ang_vel,                     # Ω
+                rotor_cmds,                  # ω (throttle)
+                next_gate_rel_b,             # p_g^{i+1}
+                next_gate_yaw,               # ψ_g^{i+1}
             ],
             dim=-1,
         )
-        observations = {"policy": obs}
-        return observations
 
-    def _get_rewards(self) -> torch.Tensor:
-        #TODO: This need to be implemented
-        reward = torch.zeros(self.num_envs, 1, device=self.device)
+        return {"policy": obs}
+     
+    def _get_rewards(self) -> torch.tensor:
+        """compute the rewards for all environments."""
+        device = self.device
+        num_envs = self.num_envs
+        reward = torch.zeros(num_envs, 1, device=device)
+
+        pk = self._robot.data.root_pos_w  # current position (n, 3)
+        
+        # store previous position if not exist
+        if not hasattr(self, "prev_pos"):
+            self.prev_pos = pk.clone()
+        
+        pk_prev = self.prev_pos
+        
+        # current target gate positions
+        gate_ids = self.progress_buf  # index of current target gate
+        gate_positions = torch.stack([torch.tensor(pos, device=device) for pos, _ in gate_features])
+        pgk = gate_positions[gate_ids]  # (n,3)
+        
+        # ---------------------------
+        # 2. progress reward
+        # ---------------------------
+        prev_dist = torch.norm(pk_prev - pgk, dim=1, keepdim=True)
+        curr_dist = torch.norm(pk - pgk, dim=1, keepdim=True)
+        progress_reward = prev_dist - curr_dist  # positive if drone moves closer
+        
+        # ---------------------------
+        # 3. angular rate penalty
+        # ---------------------------
+        omega = self._robot.data.root_ang_vel_b  
+        rate_penalty = 0.001 * torch.norm(omega, dim=1, keepdim=True)
+        
+        # ---------------------------
+        # 4. base reward
+        # ---------------------------
+        reward = progress_reward - rate_penalty
+        
+        # ---------------------------
+        # 5. collision / out-of-bounds
+        # ---------------------------
+        pos = pk
+        out_of_bounds = (
+            (pos[:, 0] < -5) | (pos[:, 0] > 5) |
+            (pos[:, 1] < -5) | (pos[:, 1] > 5) |
+            (pos[:, 2] < 0)  | (pos[:, 2] > 7)
+        )
+        collided = self._robot.data.root_pos_w[:,2] < 0.2 
+        crashed = out_of_bounds | collided
+        reward[crashed] = -10.0
+        
+        # ---------------------------
+        # 7. update previous position
+        # ---------------------------
+        self.prev_pos = pk.clone()
+        
         return reward
-
-    
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        
+    def _get_dones(self) -> tuple[torch.tensor, torch.tensor]:
             time_out = self.episode_length_buf >= self.max_episode_length - 1
             height_too_low = self._robot.data.root_pos_w[:, 2] < self.cfg.reset_height_threshold
             height_too_high = self._robot.data.root_pos_w[:, 2] > 200.0 
@@ -198,18 +280,18 @@ class EightEnv(DirectRLEnv):
 
             return died, time_out
 
-    def _reset_idx(self, env_ids: torch.Tensor | None):
+    def _reset_idx(self, env_ids: torch.tensor | none):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
         extras = {}
         for key in self._episode_sums.keys():
             avg_sum = torch.mean(self._episode_sums[key][env_ids])
-            extras[f"Episode_Reward/{key}"] = avg_sum / self.max_episode_length_s
+            extras[f"episode_reward/{key}"] = avg_sum / self.max_episode_length_s
             self._episode_sums[key][env_ids] = 0.0
 
-        extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+        extras["episode_termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+        extras["episode_termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
         self.extras["log"] = extras
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
@@ -228,28 +310,28 @@ class EightEnv(DirectRLEnv):
         num_starts = len(starting_position)
 
         for i, env_id in enumerate(env_ids):
-            # 1) Random selection among the starting positions
+            # 1) random selection among the starting positions
             start_id = torch.randint(0, num_starts, (1,), device=self.device).item()
             sx, sy, sz = starting_position[start_id]
 
-            # 2) Finding the closest gates near this starting positions
+            # 2) finding the closest gates near this starting positions
             min_dist = float("inf")
             closest_gate_id = 0
             for gate_id, (gate_pos, _) in enumerate(gate_features):
                 gx, gy, gz = gate_pos
-                dist = (sx - gx) ** 2 + (sy - gy) ** 2 # No need for the third dimensions
+                dist = (sx - gx) ** 2 + (sy - gy) ** 2 # no need for the third dimensions
                 if dist < min_dist:
                     min_dist = dist
                     closest_gate_id = gate_id
 
-            # 3) Orientation of the nearest gates
+            # 3) orientation of the nearest gates
             _, gate_rot = gate_features[closest_gate_id]
             yaw = torch.tensor(gate_rot[2], device=self.device)
             qw = torch.cos(yaw / 2)
             qz = torch.sin(yaw / 2)
             spawn_quat = torch.tensor([qw, 0.0, 0.0, qz], device=self.device)
 
-            # 5) Assigner la position et l'orientation au drone
+            # 5) assigner la position et l'orientation au drone
             root_pose[i, :3] = torch.tensor([sx, sy, sz], device=self.device)
             root_pose[i, 3:] = spawn_quat
 
