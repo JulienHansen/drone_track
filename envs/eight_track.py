@@ -114,7 +114,7 @@ class EightEnv(DirectRLEnv):
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self._body_id = self._robot.find_bodies("drone_body")[0]
+        self._body_id = self._robot.find_bodies("body")[0]
         self.rpos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
 
         self._episode_sums = {
@@ -164,11 +164,11 @@ class EightEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         # Get drone state
         drone_pos = self._robot.data.root_link_pos_w        # [num_envs, 3]
-        drone_quat = self._robot.data.root_link_quat_w       # [num_envs, 4]
-        lin_vel = self._robot.data.root_lin_vel_b      # [num_envs, 3]
-        ang_vel = self._robot.data.root_ang_vel_b      # [num_envs, 3]
+        drone_quat = self._robot.data.root_link_quat_w      # [num_envs, 4]
+        lin_vel = self._robot.data.root_lin_vel_b           # [num_envs, 3]
+        ang_vel = self._robot.data.root_ang_vel_b           # [num_envs, 3]
         drone_euler = quaternion_to_euler(drone_quat)
-        rotor_cmds = (self._actions + 1.0) / 2.0      # normalize [-1, 1] -> [0, 1]
+        rotor_cmds = (self._actions + 1.0) / 2.0            # Encore un doute sur les actions mais c'est lie au nouveau module de dynamics
 
         # Build tensor of gate positions
         gate_positions = torch.tensor([g[0] for g in gate_features], device=self.device)
@@ -193,7 +193,7 @@ class EightEnv(DirectRLEnv):
             next_gate_pos, torch.zeros_like(drone_quat)
         )
 
-        # Get gate orientations (yaw only)
+        # Get gate orientations 
         gate_orientations = torch.tensor([g[1] for g in gate_features], device=self.device)
         next_gate_yaw = gate_orientations[next_gate_ids][:, 2].unsqueeze(1)
 
@@ -203,10 +203,10 @@ class EightEnv(DirectRLEnv):
                 curr_gate_rel_b,             # p_g^i
                 lin_vel,                     # v_g^i
                 drone_euler,
-                ang_vel,                     # Ω
-                rotor_cmds,                  # ω (throttle)
+                ang_vel,                     # Omega
+                rotor_cmds,                  # omega
                 next_gate_rel_b,             # p_g^{i+1}
-                next_gate_yaw,               # ψ_g^{i+1}
+                next_gate_yaw,               # psi_g^{i+1}
             ],
             dim=-1,
         )
@@ -230,14 +230,14 @@ class EightEnv(DirectRLEnv):
         # current target gate positions
         gate_ids = self.progress_buf  # index of current target gate
         gate_positions = torch.stack([torch.tensor(pos, device=device) for pos, _ in gate_features])
-        pgk = gate_positions[gate_ids]  # (n,3)
+        pgk = gate_positions[gate_ids]  
         
         # ---------------------------
         # 2. progress reward
         # ---------------------------
         prev_dist = torch.norm(pk_prev - pgk, dim=1, keepdim=True)
         curr_dist = torch.norm(pk - pgk, dim=1, keepdim=True)
-        progress_reward = prev_dist - curr_dist  # positive if drone moves closer
+        progress_reward = prev_dist - curr_dist  
         
         # ---------------------------
         # 3. angular rate penalty
