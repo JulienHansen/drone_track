@@ -140,10 +140,11 @@ class EightEnv(DirectRLEnv):
         self.draw = _debug_draw.acquire_debug_draw_interface()
 
     def _setup_scene(self):
+        # --- robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
        
-        # track
+        # --- track
         track_cfg: RigidObjectCollectionCfg = generate_track(
             track_config={
                 "1": {"pos": (0.0, 0.0, 1.0), "yaw": 0.0},
@@ -156,15 +157,24 @@ class EightEnv(DirectRLEnv):
             }
         )
         self.track: RigidObjectCollection = track_cfg.class_type(track_cfg)
-            
+
+        # --- terrain
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
+        # --- clone environments
         self.scene.clone_environments(copy_from_source=False)
 
-        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
+        # --- global light (Option B)
+        # --- global dome light
+        light_cfg = sim_utils.DomeLightCfg(
+            intensity=1000.0,      # stronger intensity
+            color=(0.75, 0.75, 0.75),     # neutral grey
+        )
+        light_cfg.func("/World/global_light", light_cfg)
+
+
 
 
     # Currently working on the new physic model i will try to not destroyed abything cut i cannot promise 

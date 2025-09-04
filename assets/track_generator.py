@@ -5,7 +5,7 @@ import torch
 from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
 
 current_dir = os.getcwd()
-CUSTOM_GATE_USD_PATH = os.path.join(current_dir, "assets", "gate", "gate.usd")
+CUSTOM_GATE_USD_PATH = os.path.join(current_dir, "assets", "gate", "test.usdc")
 
 print("====================================================")
 print(os.path.exists(CUSTOM_GATE_USD_PATH))
