@@ -5,7 +5,7 @@ import torch
 from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
 
 current_dir = os.getcwd()
-CUSTOM_GATE_USD_PATH = os.path.join(current_dir, "assets", "gate", "test.usdc")
+CUSTOM_GATE_USD_PATH = os.path.join(current_dir, "assets", "gate", "gate.usdc")
 
 print("====================================================")
 print(os.path.exists(CUSTOM_GATE_USD_PATH))
@@ -22,7 +22,7 @@ def generate_track(track_config: dict | None) -> RigidObjectCollectionCfg:
                         kinematic_enabled=True,
                         disable_gravity=True,
                     ),
-                    scale=(1.0, 1.0, 1.0),
+                    scale=(.8, .8, .8),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(
                     pos=gate_config["pos"],

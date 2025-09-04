@@ -143,19 +143,14 @@ class EightEnv(DirectRLEnv):
         # --- robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
-       
-        # --- track
-        track_cfg: RigidObjectCollectionCfg = generate_track(
-            track_config={
-                "1": {"pos": (0.0, 0.0, 1.0), "yaw": 0.0},
-                "2": {"pos": (10.0, 5.0, 0.0), "yaw": 0.0},
-                "3": {"pos": (10.0, -5.0, 0.0), "yaw": (5 / 4) * torch.pi},
-                "4": {"pos": (-5.0, -5.0, 2.5), "yaw": torch.pi},
-                "5": {"pos": (-5.0, -5.0, 0.0), "yaw": 0.0},
-                "6": {"pos": (5.0, 0.0, 0.0), "yaw": (1 / 2) * torch.pi},
-                "7": {"pos": (0.0, 5.0, 0.0), "yaw": torch.pi},
-            }
-        )
+
+        track_config = {}
+        for i, (pos, rot) in enumerate(gate_features):
+            yaw = rot[2]  # or compute using the delta method above
+            track_config[str(i+1)] = {"pos": pos, "yaw": yaw}
+
+        track_cfg: RigidObjectCollectionCfg = generate_track(track_config=track_config)
+
         self.track: RigidObjectCollection = track_cfg.class_type(track_cfg)
 
         # --- terrain
