@@ -6,10 +6,12 @@ from torch.func import vmap
 import torch.distributions as D
 import torch.nn.functional as F
 import gymnasium as gym
-from utils import *
+from utils.utils import *
+from assets.track_generator import * 
+
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.assets import Articulation, ArticulationCfg, RigidObjectCollectionCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.ui import BaseEnvWindow
 from isaaclab.markers import VisualizationMarkers
@@ -22,7 +24,7 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 #from drone_assets.crazyflie import CRAZYFLIE_CFG
 
-from drone_assets.Custom_drone import CUSTOM_DRONE_CFG
+from assets.Custom_drone import CUSTOM_DRONE_CFG
 
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
@@ -53,12 +55,12 @@ starting_position = [
 
 @configclass
 class EightEnvCfg(DirectRLEnvCfg):
-    episode_length_s = 100.0
+    episode_length_s = 10.0
     decimation = 1
     action_space = 4
     observation_space = 20
     state_space = 0
-    moment_scale = 0.02
+    moment_scale = 2
     debug_vis = True 
     reset_tracking_error_threshold = .5  
     reset_height_threshold = 0.15  
@@ -93,7 +95,7 @@ class EightEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
     robot: ArticulationCfg = CUSTOM_DRONE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    thrust_to_weight = 1.9
+    thrust_to_weight = 3.0
 
 class EightEnv(DirectRLEnv):
     cfg: EightEnvCfg
@@ -140,21 +142,21 @@ class EightEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
-        
-        for idx, (position, angle) in enumerate(gate_features, start=1):
-            gate_path = f"/World/Gate{idx}"
-            spawn_racing_gate(
-                gate_path,
-                center=position,
-                inner_size=(1.5, 1.5),
-                bar_thickness=0.06,
-                depth=0.06,
-                color=(0.1, 0.7, 1.0),
-                kinematic=True,
-                collision=True,
-                rotation_euler_xyz=angle
-    )
-
+       
+        # track
+        track_cfg: RigidObjectCollectionCfg = generate_track(
+            track_config={
+                "1": {"pos": (0.0, 0.0, 1.0), "yaw": 0.0},
+                "2": {"pos": (10.0, 5.0, 0.0), "yaw": 0.0},
+                "3": {"pos": (10.0, -5.0, 0.0), "yaw": (5 / 4) * torch.pi},
+                "4": {"pos": (-5.0, -5.0, 2.5), "yaw": torch.pi},
+                "5": {"pos": (-5.0, -5.0, 0.0), "yaw": 0.0},
+                "6": {"pos": (5.0, 0.0, 0.0), "yaw": (1 / 2) * torch.pi},
+                "7": {"pos": (0.0, 5.0, 0.0), "yaw": torch.pi},
+            }
+        )
+        self.track: RigidObjectCollection = track_cfg.class_type(track_cfg)
+            
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)

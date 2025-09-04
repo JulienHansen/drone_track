@@ -22,7 +22,7 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 #from drone_assets.crazyflie import CRAZYFLIE_CFG
 
-from drone_assets.Custom_drone import CUSTOM_DRONE_CFG
+from assets.Custom_drone import CUSTOM_DRONE_CFG
 
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw

@@ -17,7 +17,7 @@ import omni.kit.commands
 # Paths
 # ------------------------------------------------------------------
 current_dir = os.getcwd()
-CUSTOM_DRONE_URDF_PATH = os.path.join(current_dir, "drone_assets", "Custom_drone", "Custom_drone.urdf")
+CUSTOM_DRONE_URDF_PATH = os.path.join(current_dir, "assets", "Custom_drone", "Custom_drone.urdf")
 
 # ------------------------------------------------------------------
 # URDF import configuration
