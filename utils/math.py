@@ -1,7 +1,6 @@
 import torch
 import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
-# Required for Euler to Quaternion conversion
 from scipy.spatial.transform import Rotation
 
 def quaternion_to_euler(quaternion: torch.Tensor) -> torch.Tensor:
