@@ -6,7 +6,7 @@ from torch.func import vmap
 import torch.distributions as D
 import torch.nn.functional as F
 import gymnasium as gym
-from utils.utils import *
+from utils.math import *
 from assets.track_generator import * 
 
 
@@ -22,9 +22,9 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
 
-#from drone_assets.crazyflie import CRAZYFLIE_CFG
-
-from assets.Custom_drone import CUSTOM_DRONE_CFG
+#from assets.crazyflie import CRAZYFLIE_CFG
+from assets.five_in_drone import FIVE_IN_DRONE 
+#from assets.Custom_drone import CUSTOM_DRONE_CFG
 
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
@@ -94,8 +94,8 @@ class EightEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
-    robot: ArticulationCfg = CUSTOM_DRONE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    thrust_to_weight = 3.0
+    robot: ArticulationCfg = FIVE_IN_DRONE.replace(prim_path="/World/envs/env_.*/Robot")
+    thrust_to_weight = 3.5
 
 class EightEnv(DirectRLEnv):
     cfg: EightEnvCfg
@@ -117,19 +117,16 @@ class EightEnv(DirectRLEnv):
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
-        # --- precompute gate tensors on device
         self.gate_pos = torch.tensor([p for p, _ in gate_features], device=self.device)        # [G, 3]
         self.gate_yaw = torch.tensor([r[2] for _, r in gate_features], device=self.device)     # [G]
         self.gate_normal = torch.stack([torch.cos(self.gate_yaw), torch.sin(self.gate_yaw), torch.zeros_like(self.gate_yaw)], dim=1)  # [G, 3]
         self.gate_radius = 0.75  # half of inner size ~1.5
 
-        # signed distance to current-gate plane at previous step (for crossing detection)
         self.prev_signed = torch.zeros(self.num_envs, device=self.device)
-        # previous distance to current gate center (for progress reward)
         self.prev_dist_gate = torch.zeros(self.num_envs, device=self.device)
 
 
-        self._body_id = self._robot.find_bodies("drone_body")[0]
+        self._body_id = self._robot.find_bodies("body")[0] # body for crazyflie, drone_body for the others 
         self.rpos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
 
         self._episode_sums = {
@@ -167,8 +164,7 @@ class EightEnv(DirectRLEnv):
             intensity=1000.0,      # stronger intensity
             color=(0.75, 0.75, 0.75),     # neutral grey
         )
-        light_cfg.func("/World/global_light", light_cfg)
-
+        light_cfg.func("/World/global_light", light_cfg) 
 
 
 
