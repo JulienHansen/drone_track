@@ -8,6 +8,9 @@ import torch.nn.functional as F
 import gymnasium as gym
 from utils.math import *
 from assets.track_generator import * 
+from collections import deque
+import yaml
+import os 
 
 
 import isaaclab.sim as sim_utils
@@ -23,33 +26,12 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 
 #from assets.crazyflie import CRAZYFLIE_CFG
-from assets.five_in_drone import FIVE_IN_DRONE 
-#from assets.Custom_drone import CUSTOM_DRONE_CFG
+#from assets.five_in_drone import FIVE_IN_DRONE 
+from assets.Custom_drone import CUSTOM_DRONE_CFG
 
 from isaaclab.markers import CUBOID_MARKER_CFG
 from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
-
-gate_features = [
-    ((0.0, -3.0, 4.0),(0.0, 0.0, 0.0)),
-    ((-1.5, -1.5, 4.0),(0.0, 0.0, torch.pi/2)),
-    ((0.0, 0.0, 4.0),(0.0, 0.0, 0.0)),
-    ((1.5, 1.5, 4.0),(0.0, 0.0, torch.pi/2)),
-    ((0.0, 3.0, 4.0),(0.0, 0.0, 0.0)),
-    ((-1.5, 1.5, 4.0),(0.0, 0.0, torch.pi/2)),
-    ((0.0, 0.0, 4.0),(0.0, 0.0, 0.0)),
-    ((1.5, -1.5, 4.0),(0.0, 0.0, torch.pi/2)),
-]
-
-starting_position = [
-    (1.0, -3.0, 4.0),
-    (-1.5, -2.5 , 4.0),
-    (-1.0, 0.0, 4.0),
-    (1.5, 0.5, 4.0),
-    (1.0, 3.0, 4.0),
-    (-1.5, 2.5, 4.0),
-    (1.5, -0.5, 4.0),
-]
 
 
 
@@ -58,7 +40,7 @@ class EightEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.0
     decimation = 1
     action_space = 4
-    observation_space = 20
+    observation_space = 22
     state_space = 0
     moment_scale = 2
     debug_vis = True 
@@ -94,7 +76,7 @@ class EightEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=15.0, replicate_physics=True)
 
-    robot: ArticulationCfg = FIVE_IN_DRONE.replace(prim_path="/World/envs/env_.*/Robot")
+    robot: ArticulationCfg = CUSTOM_DRONE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     thrust_to_weight = 3.5
 
 class EightEnv(DirectRLEnv):
@@ -116,17 +98,11 @@ class EightEnv(DirectRLEnv):
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-
-        self.gate_pos = torch.tensor([p for p, _ in gate_features], device=self.device)        # [G, 3]
-        self.gate_yaw = torch.tensor([r[2] for _, r in gate_features], device=self.device)     # [G]
-        self.gate_normal = torch.stack([torch.cos(self.gate_yaw), torch.sin(self.gate_yaw), torch.zeros_like(self.gate_yaw)], dim=1)  # [G, 3]
-        self.gate_radius = 0.75  # half of inner size ~1.5
-
         self.prev_signed = torch.zeros(self.num_envs, device=self.device)
         self.prev_dist_gate = torch.zeros(self.num_envs, device=self.device)
 
 
-        self._body_id = self._robot.find_bodies("body")[0] # body for crazyflie, drone_body for the others 
+        self._body_id = self._robot.find_bodies("drone_body")[0] # body for crazyflie, drone_body for the others 
         self.rpos = torch.zeros(self.num_envs, self.future_traj_steps, 3, device=self.device)
 
         self._episode_sums = {
@@ -141,14 +117,60 @@ class EightEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
 
-        track_config = {}
-        for i, (pos, rot) in enumerate(gate_features):
-            yaw = rot[2]  # or compute using the delta method above
-            track_config[str(i+1)] = {"pos": pos, "yaw": yaw}
+        current_dir = os.getcwd()
+        GATE_CONFIG_PATH = os.path.join(current_dir, "assets", "gate", "gates_config.yaml")
 
-        track_cfg: RigidObjectCollectionCfg = generate_track(track_config=track_config)
+        # Lecture du YAML
+        with open(GATE_CONFIG_PATH, "r") as f:
+            gates_data = yaml.safe_load(f)
+
+        gate_config = {}
+
+        for gate in sorted(gates_data.get("gates", []), key=lambda g: g["id"]):
+            gate_id = str(gate["id"])
+            gate_config[gate_id] = {
+                "pos": gate["position"],       # [x, y, z]
+                "rot": gate["orientation"]     # [roll, pitch, yaw]
+            }
+        
+        # Génération du track à partir de la liste chaînée
+        track_cfg: RigidObjectCollectionCfg = generate_track(track_config=gate_config)    
 
         self.track: RigidObjectCollection = track_cfg.class_type(track_cfg)
+
+
+        # Récupérer toutes les positions [x, y, z]
+        self.gate_pos = torch.tensor(
+            [gate_config["pos"] for _, gate_config in gate_config.items()],
+            device=self.device
+        )  # [G, 3]
+
+        # Récupérer toutes les rotations [roll, pitch, yaw]
+        self.gate_rot = torch.tensor(
+            [gate_config["rot"] for _, gate_config in gate_config.items()],
+            device=self.device
+        )  # [G, 3]
+
+        # Créer les quaternions à partir des rotations Euler (roll, pitch, yaw)
+        quats = math_utils.quat_from_euler_xyz(
+            self.gate_rot[:, 0],  # roll
+            self.gate_rot[:, 1],  # pitch
+            self.gate_rot[:, 2],  # yaw
+        )  # [G, 4]
+
+        # Vecteur normal local (par exemple l'axe X de la gate)
+        local_normal = torch.tensor([1.0, 0.0, 0.0], device=self.device).repeat(len(quats), 1)  # [G, 3]
+
+        # Appliquer la rotation à ce vecteur
+        self.gate_normal = math_utils.quat_apply(quats, local_normal)  # [G, 3]
+        self.gate_radius = 0.75  # half of inner size ~1.5
+
+    
+
+        starting_positions = gates_data["starting_positions"]  # liste de listes [[x,y,z], ...]
+
+        # Conversion en tenseur sur le bon device
+        self.start_pos = torch.tensor(starting_positions, device=self.device)  # [N, 3]
 
         # --- terrain
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
@@ -197,9 +219,9 @@ class EightEnv(DirectRLEnv):
         curr_gate_rel_b, _ = subtract_frame_transforms(drone_pos, drone_quat, curr_gate_pos, torch.zeros_like(drone_quat))
         next_gate_rel_b, _ = subtract_frame_transforms(drone_pos, drone_quat, next_gate_pos, torch.zeros_like(drone_quat))
 
-        next_gate_yaw = self.gate_yaw[gidn].unsqueeze(1)   # [N, 1]
+        next_gate_rot = self.gate_rot[gidn]       # [N, 3] -> roll, pitch, yaw
 
-        obs = torch.cat([curr_gate_rel_b, lin_vel, drone_euler, ang_vel, rotor_cmds, next_gate_rel_b, next_gate_yaw], dim=-1)
+        obs = torch.cat([curr_gate_rel_b, lin_vel, drone_euler, ang_vel, rotor_cmds, next_gate_rel_b, next_gate_rot], dim=-1)
         return {"policy": obs}
     
     def _get_rewards(self) -> torch.Tensor:
@@ -280,7 +302,7 @@ class EightEnv(DirectRLEnv):
 
             return died, time_out
 
-    def _reset_idx(self, env_ids: torch.tensor | none):
+    def _reset_idx(self, env_ids: torch.tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
 
@@ -307,21 +329,25 @@ class EightEnv(DirectRLEnv):
 
         root_pose = torch.zeros((len(env_ids), 7), device=self.device)
 
-        num_starts = len(starting_position)
+        num_starts = len(self.start_pos)
 
         # choose spawn and set initial current gate to the closest one
         for i, env_id in enumerate(env_ids):
             start_id = torch.randint(0, num_starts, (1,), device=self.device).item()
-            sx, sy, sz = starting_position[start_id]
+            sx, sy, sz = self.start_pos[start_id]
 
             # nearest gate id w.r.t. (x,y)
-            diffs = self.gate_pos[:, :2] - torch.tensor([sx, sy], device=self.device)
+            diffs = self.gate_pos - torch.tensor([sx, sy, sz], device=self.device)  # [G, 3]
             closest_gate_id = torch.argmin(torch.sum(diffs * diffs, dim=1)).item()
 
-            yaw = self.gate_yaw[closest_gate_id]
-            qw = torch.cos(yaw / 2)
-            qz = torch.sin(yaw / 2)
-            spawn_quat = torch.tensor([qw, 0.0, 0.0, qz], device=self.device)
+            roll, pitch, yaw = self.gate_rot[closest_gate_id]  # [roll, pitch, yaw]
+
+            roll = roll.to(self.device) if isinstance(roll, torch.Tensor) else torch.tensor(roll, device=self.device)
+            pitch = pitch.to(self.device) if isinstance(pitch, torch.Tensor) else torch.tensor(pitch, device=self.device)
+            yaw = yaw.to(self.device) if isinstance(yaw, torch.Tensor) else torch.tensor(yaw, device=self.device)
+
+            spawn_quat = math_utils.quat_from_euler_xyz(roll, pitch, yaw)
+
 
             root_pose[i, :3] = torch.tensor([sx, sy, sz], device=self.device)
             root_pose[i, 3:] = spawn_quat

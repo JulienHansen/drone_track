@@ -1,4 +1,5 @@
 from pxr import Usd, Sdf
+import os
 
 def modify_texture_paths(usd_path, new_texture_path, output_path=None, extensions=None):
     """
@@ -51,7 +52,11 @@ def modify_texture_paths(usd_path, new_texture_path, output_path=None, extension
 
 
 # Example usage
+
 usd_file = "gate.usd"
-new_texture = "/home/uliege/Desktop/drone_track/assets/gate/textures/bitmap.png"  # Can be absolute or relative
+
+current_dir = os.getcwd()
+new_texture = os.path.join(current_dir, "textures", "bitmap.png")
+#new_texture = "/home/uliege/Desktop/drone_track/assets/gate/textures/bitmap.png"  # Can be absolute or relative
 modify_texture_paths(usd_file, new_texture)
 

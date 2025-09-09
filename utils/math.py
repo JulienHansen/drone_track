@@ -149,3 +149,5 @@ def spawn_racing_gate(
     # horizontal bars
     bar("top",    (depth, w, bar_thickness), (0.0, 0.0, half_h))
     bar("bottom", (depth, w, bar_thickness), (0.0, 0.0, -half_h))
+
+

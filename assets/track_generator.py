@@ -23,11 +23,14 @@ def generate_track(track_config: dict | None) -> RigidObjectCollectionCfg:
                 init_state=RigidObjectCfg.InitialStateCfg(
                     pos=(gate_config["pos"][0], gate_config["pos"][1], gate_config["pos"][2] - 1),
                     rot=math_utils.quat_from_euler_xyz(
-                        torch.tensor(0.0), torch.tensor(0.0), torch.tensor(gate_config["yaw"])
+                        torch.tensor(gate_config["rot"][0]),  # roll
+                        torch.tensor(gate_config["rot"][1]),  # pitch
+                        torch.tensor(gate_config["rot"][2])   # yaw
                     ).tolist(),
                 ),
             )
             for gate_id, gate_config in track_config.items()
         }
     )
+
 

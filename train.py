@@ -21,6 +21,7 @@ parser.add_argument("--video", action="store_true", default=False, help="Record 
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=5000, help="Interval between video recordings (in steps).")
 parser.add_argument("--algo", type=str, default="ippo", choices=["ippo", "p-ippo"], help="Select training algorithm: 'ippo' or 'p-ippo'.")
+#parser.add_argument("--gates_config", type=str, default="gates_config.yaml", help="Path to the YAML file containing gates configuration.")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
