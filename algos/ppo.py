@@ -102,6 +102,7 @@ class TrackAgent:
         cfg["value_loss_scale"] = 1.0
         cfg["kl_threshold"] = 0
 
+
         if isinstance(self.observation_space, gym.spaces.Box):
             cfg["state_preprocessor"] = RunningStandardScaler
             cfg["state_preprocessor_kwargs"] = {"size": self.observation_space, "device": self.device}

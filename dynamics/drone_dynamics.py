@@ -1,5 +1,6 @@
 import torch
 import math
+from pid import * 
 
 class DroneDynamics:
     def __init__(self, num_envs, device):
@@ -36,36 +37,50 @@ class DroneDynamics:
 
 
     def reset(self, env_ids):
-        """Resets the parameters of specified environment (also perform domain randomization here)."""
-        if len(env_ids) == 0:
-            return
+                """Resets the parameters of specified environment (also perform domain randomization here)."""
+                if len(env_ids) == 0:
+                    return
 
-        # --- Domain Randomization --- 
-        self.mass[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.6, 1.4)
-        self.J[env_ids, 0] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jxx
-        self.J[env_ids, 1] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jyy
-        self.J[env_ids, 2] = torch.empty(len(env_ids), device=self.device).uniform_(6e-3, 2e-2) # Jzz
-        
-        # TODO: J_zz_rp in Eq. 9 is not randomized normal ?.
-        self.J_zz_rp[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(6e-5, 1e-4)
-        
-        self.kl[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(5e-6, 1.5e-5)
-        self.kd[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(8e-8, 4.5e-7) 
-        self.kx[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
-        self.ky[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
-        self.lb[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
-        self.lf[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
+                # --- Domain Randomization --- 
+                self.mass[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.6, 1.4)
+                self.J[env_ids, 0] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jxx
+                self.J[env_ids, 1] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jyy
+                self.J[env_ids, 2] = torch.empty(len(env_ids), device=self.device).uniform_(6e-3, 2e-2) # Jzz
+                
+                # TODO: J_zz_rp in Eq. 9 is not randomized normal ?.
+            self.J_zz_rp[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(6e-5, 1e-4)
+            
+            self.kl[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(5e-6, 1.5e-5)
+            self.kd[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(8e-8, 4.5e-7) 
+            self.kx[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
+            self.ky[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
+            self.lb[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
+            self.lf[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
 
-        self.theta_b[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
-        self.theta_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
+            self.theta_b[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
+            self.theta_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
 
-        self.sigma_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.6)
-        self.sigma_tau[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.03)
+            self.sigma_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.6)
+            self.sigma_tau[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.03)
 
-        # --- Persistent states ---
-        self.prop_speeds[env_ids] = 0.0
-        self.f_res[env_ids] = 0.0
-        self.tau_res[env_ids] = 0.0
+            # --- Persistent states ---
+            self.prop_speeds[env_ids] = 0.0
+            self.f_res[env_ids] = 0.0
+            self.tau_res[env_ids] = 0.0
+
+        def pre_forces_compute(self, actions):
+            
+        desired_attitude = betaflight(actions)
+        pid = New
+        omega_ss = pid
+
+
+
+
+
+
+
+
 
 
     def compute_forces_and_torques(self, actions, lin_vel_b, dt):

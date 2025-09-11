@@ -20,6 +20,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.sensors import ContactSensorCfg, ImuCfg, TiledCameraCfg
 
 
 #from assets.crazyflie import CRAZYFLIE_CFG
@@ -27,7 +28,7 @@ from assets.five_in_drone import FIVE_IN_DRONE
 #from assets.Custom_drone import CUSTOM_DRONE_CFG
 
 from isaaclab.markers import CUBOID_MARKER_CFG
-from isaacsim.util.debug_draw import _debug_draw
+#from isaacsim.util.debug_draw import _debug_draw
 from isaacsim.core.utils.viewports import set_camera_view
 
 gate_features = [
@@ -76,6 +77,18 @@ class EightEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
+    )
+
+        # sensors
+    #collision_sensor: ContactSensorCfg = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", debug_vis=True)
+    #imu = ImuCfg(prim_path="{ENV_REGEX_NS}/Robot/body", debug_vis=False)
+    camera: TiledCameraCfg = TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/body/camera",
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.14, 0.0, 0.05), rot=(1.0, 0.0, 0.0, 0.0), convention="world"),
+        data_types=["rgb"],
+        spawn=sim_utils.FisheyeCameraCfg(),
+        width=80,
+        height=80,
     )
 
     terrain = TerrainImporterCfg(
@@ -133,14 +146,14 @@ class EightEnv(DirectRLEnv):
             key: torch.zeros(self.num_envs, device=self.device)
             for key in ["reward_pose", "reward_effort" ,"reward_up"]
         }
-        self.set_debug_vis(self.cfg.debug_vis)
-        self.draw = _debug_draw.acquire_debug_draw_interface()
+        #self.set_debug_vis(self.cfg.debug_vis)
+        #self.draw = _debug_draw.acquire_debug_draw_interface()
 
     def _setup_scene(self):
         # --- robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
-
+        
         track_config = {}
         for i, (pos, rot) in enumerate(gate_features):
             yaw = rot[2]  # or compute using the delta method above
@@ -155,11 +168,9 @@ class EightEnv(DirectRLEnv):
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
-        # --- clone environments
+        self._camera = self.cfg.camera.class_type(self.cfg.camera)
         self.scene.clone_environments(copy_from_source=False)
 
-        # --- global light (Option B)
-        # --- global dome light
         light_cfg = sim_utils.DomeLightCfg(
             intensity=1000.0,      # stronger intensity
             color=(0.75, 0.75, 0.75),     # neutral grey
@@ -201,75 +212,66 @@ class EightEnv(DirectRLEnv):
 
         obs = torch.cat([curr_gate_rel_b, lin_vel, drone_euler, ang_vel, rotor_cmds, next_gate_rel_b, next_gate_yaw], dim=-1)
         return {"policy": obs}
-    
+ 
+
     def _get_rewards(self) -> torch.Tensor:
         device = self.device
         N = self.num_envs
 
-        p = self._robot.data.root_pos_w                     # [N, 3]
+        # --- current drone position
+        p = self._robot.data.root_pos_w  # [N, 3]
         if not hasattr(self, "prev_pos"):
             self.prev_pos = p.clone()
 
-        gid  = self.progress_buf                            # [N]
-        gpos = self.gate_pos[gid]                           # [N, 3]
-        gN   = self.gate_normal[gid]                        # [N, 3]
+        # --- target gate info
+        gid = self.progress_buf                   # [N]
+        gpos = self.gate_pos[gid]                 # [N, 3]
+        gN = self.gate_normal[gid]                # [N, 3]
 
-        # --- signed distance to gate plane & radial distance to center
-        diff = p - gpos                                     # [N, 3]
-        signed = torch.sum(diff * gN, dim=1)                # [N]
-        radial = torch.norm(diff, dim=1)                    # [N]
+        # --- signed distance & radial distance to gate center
+        diff = p - gpos
+        signed = torch.sum(diff * gN, dim=1)
+        radial = torch.norm(diff, dim=1)
 
-        # --- detect crossing (inside aperture + plane crossed forward)
-        inside = radial <= self.gate_radius
-        crossed = (self.prev_signed <= 0.0) & (signed > 0.0) & inside
+        # --- detect gate crossing (plane crossed forward)
+        crossed = (self.prev_signed <= 0.0) & (signed > 0.0)
 
-        # increment gate (wrap automatically)
+        # --- immediately update progress to next gate for crossed drones
         if crossed.any():
             self.progress_buf[crossed] = (self.progress_buf[crossed] + 1) % self.gate_pos.shape[0]
-            # update references for those envs (optional: reset prev_dist to avoid spike)
-            new_gid = self.progress_buf[crossed]
-            self.prev_dist_gate[crossed] = torch.norm(p[crossed] - self.gate_pos[new_gid], dim=1)
 
-        # store for next step
+        # --- store signed distance for next step
         self.prev_signed = signed.detach()
 
-        # ----------------------------------------------------------------
-        # Rewards (shaped like the paper, + some light shaping for stability)
-        # ----------------------------------------------------------------
-        # 1) progress toward current gate center
-        curr_dist = torch.norm(p - self.gate_pos[self.progress_buf], dim=1)        # [N]
-        prev_dist = self.prev_dist_gate if hasattr(self, "prev_dist_gate") else curr_dist.detach()
-        progress_reward = (prev_dist - curr_dist).unsqueeze(1)                     # [N, 1]
+        # --- progress reward: distance decrease toward current gate
+        prev_dist = torch.norm(self.prev_pos - gpos, dim=1)
+        curr_dist = torch.norm(p - gpos, dim=1)
+        progress_reward = prev_dist - curr_dist                # [N]
 
-        # 2) small bonus on actual crossing (helps commit through the gate)
-        pass_bonus = (crossed.float() * 1.0).unsqueeze(1)                           # +1.0 when passed
+        # --- angular velocity penalty
+        omega = self._robot.data.root_ang_vel_b                # [N, 3]
+        rate_penalty = 0.001 * torch.norm(omega, dim=1)       # [N]
 
-        # 3) angular-rate penalty (as in paper)
-        omega = self._robot.data.root_ang_vel_b
-        rate_penalty = 0.001 * torch.norm(omega, dim=1, keepdim=True)
+        # --- reward before collisions
+        reward = progress_reward - rate_penalty               # [N]
 
-        # 4) tiny step penalty to keep moving
-        step_penalty = 0.0005 * torch.ones((N, 1), device=device)
-
-        reward = progress_reward + pass_bonus - rate_penalty - step_penalty
-
-        # Safety / OOB
+        # --- collision / out-of-bounds penalty
         out_of_bounds = (
             (p[:, 0] < -5) | (p[:, 0] > 5) |
             (p[:, 1] < -5) | (p[:, 1] > 5) |
-            (p[:, 2] <  0) | (p[:, 2] > 7)
+            (p[:, 2] < 0) | (p[:, 2] > 7)
         )
         collided = p[:, 2] < 0.2
         crashed = out_of_bounds | collided
+
         reward[crashed] = -10.0
 
-        # book-keeping for next step
+        # --- store previous positions for next step
         self.prev_pos = p.clone()
-        self.prev_dist_gate = curr_dist.detach()
 
         return reward
-  
-           
+
+
     def _get_dones(self) -> tuple[torch.tensor, torch.tensor]:
             time_out = self.episode_length_buf >= self.max_episode_length - 1
             height_too_low = self._robot.data.root_pos_w[:, 2] < self.cfg.reset_height_threshold
