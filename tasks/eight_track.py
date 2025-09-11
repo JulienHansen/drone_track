@@ -362,3 +362,5 @@ class EightEnv(DirectRLEnv):
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) 
+
+

@@ -22,7 +22,7 @@ class DroneDynamics:
         self.sigma_tau = torch.empty(self.num_envs, 1, device=self.device)
         
         # --- Fixed Parameters ---
-        self.kappa = torch.full((self.num_envs, 1), 0.01, device=self.device)
+        self.kappa = torch.full((self.num_envs, 1), 0.1, device=self.device)
         self.max_omega = 1600.0 # TODO: Aucune idee de la valeur, j'ai un peu chercher mais pas sur 
         # TODO: This needs to be modified 
 
@@ -41,23 +41,22 @@ class DroneDynamics:
             return
 
         # --- Domain Randomization --- 
-        self.mass[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.6, 1.4)
-        self.J[env_ids, 0] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jxx
-        self.J[env_ids, 1] = torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 1.2e-2) # Jyy
-        self.J[env_ids, 2] = torch.empty(len(env_ids), device=self.device).uniform_(6e-3, 2e-2) # Jzz
+        self.mass[env_ids] = 0.795 #torch.empty(len(env_ids), 1, device=self.device).uniform_(0.15, 1.4)
+        self.J[env_ids, 0] = 0.007 #torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 6e-2) # Jxx
+        self.J[env_ids, 1] = 0.007 #torch.empty(len(env_ids), device=self.device).uniform_(3e-3, 6e-2) # Jyy
+        self.J[env_ids, 2] = 0.012 #torch.empty(len(env_ids), device=self.device).uniform_(6e-3, 2e-1) # Jzz
         
         # TODO: J_zz_rp in Eq. 9 is not randomized normal ?.
-        self.J_zz_rp[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(6e-5, 1e-4)
-        
-        self.kl[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(5e-6, 1.5e-5)
-        self.kd[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(8e-8, 4.5e-7) 
-        self.kx[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
-        self.ky[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.03, 0.2)
-        self.lb[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
-        self.lf[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.11, 0.17)
+        self.J_zz_rp[env_ids] = 4e-4  #torch.empty(len(env_ids), 1, device=self.device).uniform_(4e-4, 3e-3)
+        self.kl[env_ids] = 8.54e-6 #torch.empty(len(env_ids), 1, device=self.device).uniform_(4e-7, 8e-5)
+        self.kd[env_ids] = 1.37e-6 #torch.empty(len(env_ids), 1, device=self.device).uniform_(8e-8, 4e-6) 
+        self.kx[env_ids] = 5e-5 #torch.empty(len(env_ids), 1, device=self.device).uniform_(2e-5, 1e-4)
+        self.ky[env_ids] = 5e-5 #torch.empty(len(env_ids), 1, device=self.device).uniform_(2e-5, 1e-4)
+        self.lb[env_ids] = 0.17 #torch.empty(len(env_ids), 1, device=self.device).uniform_(0.07, 0.16)
+        self.lf[env_ids] = 0.17 #torch.empty(len(env_ids), 1, device=self.device).uniform_(0.07, 0.16)
 
-        self.theta_b[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
-        self.theta_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(15, 75) * (math.pi / 180.0)
+        self.theta_b[env_ids] = 45 * (math.pi / 180.0) #torch.empty(len(env_ids), 1, device=self.device).uniform_(35, 55) * (math.pi / 180.0)
+        self.theta_f[env_ids] = 45 * (math.pi / 180.0) #torch.empty(len(env_ids), 1, device=self.device).uniform_(35, 55) * (math.pi / 180.0)
 
         self.sigma_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.6)
         self.sigma_tau[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.03)
@@ -89,12 +88,15 @@ class DroneDynamics:
 
 
         # --- 1. Motor Dynamics (Eq. 5) --- 
-        omega_ss = actions * self.max_omega
+        omega_ss = actions 
         dot_omega = (omega_ss - self.prop_speeds) / self.kappa
         self.prop_speeds += dot_omega * dt
         self.prop_speeds = torch.clamp(self.prop_speeds, min=0.0)
+
+        print("prop_speeds:", self.prop_speeds)
         
         prop_speeds_sq = self.prop_speeds**2
+
 
         # Propeller Thrust (Eq. 6) 
         thrust_magnitude = torch.sum(self.kl * prop_speeds_sq, dim=1)
@@ -126,7 +128,8 @@ class DroneDynamics:
                              +self.lb * torch.cos(self.theta_b) * self.kl * prop_speeds_sq[:, 2]
                              -self.lf * torch.cos(self.theta_f) * self.kl * prop_speeds_sq[:, 3] ).squeeze()
         
-        tau_prop_b[:, 2] = self.kd.squeeze() * (prop_speeds_sq[:, 0] - prop_speeds_sq[:, 1] + prop_speeds_sq[:, 2] - prop_speeds_sq[:, 3])
+        
+        tau_prop_b[:, 2] = self.kd.squeeze() * (prop_speeds_sq[:, 0] - prop_speeds_sq[:, 1] - prop_speeds_sq[:, 2] + prop_speeds_sq[:, 3])
 
         # Motor Reaction Torque (Eq. 9) 
         tau_mot_b = torch.zeros(self.num_envs, 3, device=self.device)
@@ -142,6 +145,86 @@ class DroneDynamics:
 
         return total_forces_b, total_torques_b
     
+
+    def betaflight_rate_profile(
+        self,
+        rc_input,                         # shape: [N, 3]
+        throttle_input,                   # shape: [N]
+        rc_rate=torch.tensor([1.58, 1.55, 1.00]),
+        super_rate=torch.tensor([0.73, 0.73, 0.73]),
+        rc_expo=torch.tensor([0.30, 0.30, 0.30]),
+        super_expo_active=True,
+        limit=torch.tensor([2000.0, 2000.0, 2000.0])
+    ):
+        """
+        Fully vectorized Betaflight rate profile over [N, 3] RC input.
+        Each row of rc_input is a 3D command (roll, pitch, yaw).
+        """
+        
+        rc_rate = rc_rate.view(1, 3).to(rc_input.device)
+        super_rate = super_rate.view(1, 3).to(rc_input.device)
+        rc_expo = rc_expo.view(1, 3).to(rc_input.device)
+        limit = limit.view(1, 3).to(rc_input.device)
+
+        # RC Rate > 2 shaping
+        rc_rate = torch.where(rc_rate > 2, rc_rate + (rc_rate - 2) * 14.54, rc_rate)
+
+        # Expo shaping
+        expo_power = 3
+        rc_input_shaped = rc_input * (rc_input.abs() ** expo_power) * rc_expo + rc_input * (1 - rc_expo)
+
+        # Super Expo shaping
+        if super_expo_active:
+            rc_factor = 1.0 / torch.clamp(1.0 - rc_input_shaped.abs() * super_rate, 0.01, 1.0)
+            angular_vel = 200 * rc_rate * rc_input_shaped * rc_factor
+        else:
+            angular_vel = (((rc_rate * 100) + 27) * rc_input_shaped / 16.0) / 4.1
+        
+        total_thrust = (throttle_input + 1) * max_thrust / 2  # [N]
+    
+
+        angular_vel = torch.clamp(angular_vel, -limit, limit)
+        return angular_vel, total_thrust  # [N, 3]
+
+
+    def step_body_rates(self, torques_b, omega_b, dt):
+        """
+        Intègre uniquement les équations de rotation (body rates).
+        
+        Args:
+            torques_b (torch.Tensor): [N, 3] couples totaux dans le repère corps
+            omega_b (torch.Tensor): [N, 3] body rates actuels [p,q,r]
+            dt (float): pas de temps
+        
+        Returns:
+            new_omega_b (torch.Tensor): [N, 3] body rates mis à jour
+        """
+        print("torques_b:", torques_b)
+    
+        # Moments d’inertie [N,3]
+        Jx, Jy, Jz = self.J[:, 0], self.J[:, 1], self.J[:, 2]
+
+        # J * omega
+        J_omega = torch.stack([
+            Jx * omega_b[:, 0],
+            Jy * omega_b[:, 1],
+            Jz * omega_b[:, 2]
+        ], dim=1)
+
+        # Terme gyroscopique ω × (Jω)
+        cross_tau = torch.cross(omega_b, J_omega, dim=1)
+
+        # Accélération angulaire
+        domega_b = torch.zeros_like(omega_b)
+        domega_b[:, 0] = (torques_b[:, 0] - cross_tau[:, 0]) / Jx
+        domega_b[:, 1] = (torques_b[:, 1] - cross_tau[:, 1]) / Jy
+        domega_b[:, 2] = (torques_b[:, 2] - cross_tau[:, 2]) / Jz
+
+        # Intégration d’Euler
+        new_omega_b = omega_b + domega_b * dt
+        print("new_omega_b:", new_omega_b)
+
+        return new_omega_b
 
 
 
