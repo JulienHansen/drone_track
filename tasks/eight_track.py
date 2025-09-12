@@ -11,6 +11,8 @@ from assets.track_generator import *
 from collections import deque
 import yaml
 import os 
+from dynamics.PIDController import PIDController
+from dynamics.drone_dynamics import DroneDynamics
 
 
 import isaaclab.sim as sim_utils
@@ -95,7 +97,7 @@ class EightEnv(DirectRLEnv):
         self.origin = torch.tensor([0., 0., 2.], device=self.device)
         action_dim = gym.spaces.flatdim(self.single_action_space)
         self._actions = torch.zeros(self.num_envs, action_dim, device=self.device)
-        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._net_forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.prev_signed = torch.zeros(self.num_envs, device=self.device)
@@ -111,6 +113,9 @@ class EightEnv(DirectRLEnv):
         }
         self.set_debug_vis(self.cfg.debug_vis)
         self.draw = _debug_draw.acquire_debug_draw_interface()
+
+        self.dyn = DroneDynamics(num_envs=self.num_envs, device=self.device)
+        self.pid = PIDController(num_envs=self.num_envs, device=self.device)
 
     def _setup_scene(self):
         # --- robot
@@ -193,11 +198,14 @@ class EightEnv(DirectRLEnv):
     # Currently working on the new physic model i will try to not destroyed abything cut i cannot promise 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+        setpoint = self.dyn.betaflight_rate_profile(rc_input=self.actions)
+        self.pid.reset_setpoint(setpoint=setpoint)
+        process_variable = torch.cat([self._net_forces[:, 0, 2].unsqueeze(1), self._robot.data.root_ang_vel_b], dim=1)
+        motors = self.pid.compute(process_variable=process_variable, dt=self.sim.cfg.dt)
+        self._net_forces[:, 0, :], self._moment[:, 0, :] =  self.dyn.compute_forces_and_torques(motors=motors, lin_vel_b=self._robot.data.root_lin_vel_b, dt=self.sim.cfg.dt)
 
     def _apply_action(self):
-        self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
+        self._robot.set_external_force_and_torque(self._net_forces, self._moment, body_ids=self._body_id)
 
     def _get_observations(self) -> dict:
         drone_pos  = self._robot.data.root_link_pos_w
@@ -358,9 +366,13 @@ class EightEnv(DirectRLEnv):
             gate_norm_i = self.gate_normal[closest_gate_id]
             self.prev_signed[env_id] = torch.dot(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i, gate_norm_i)
             self.prev_dist_gate[env_id] = torch.norm(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i)
+            self.dyn.reset(env_ids=env_ids)
+            self.pid.reset(env_ids=env_ids, max_thrust_to_weight=self.dyn.max_thrust_to_weight,max_rate=self.dyn.max_rate, max_prop_speed=self.dyn.max_prop_speed, mass=self.dyn.mass)
 
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) 
+
+        
 
 

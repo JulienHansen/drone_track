@@ -20,13 +20,14 @@ class DroneDynamics:
         self.theta_f = torch.empty(self.num_envs, 1, device=self.device)
         self.sigma_f = torch.empty(self.num_envs, 1, device=self.device)
         self.sigma_tau = torch.empty(self.num_envs, 1, device=self.device)
-        
+        self.max_thrust_to_weight = torch.empty(self.num_envs, 1, device=self.device)
+        self.g   = torch.tensor(9.81, device=self.device)
+        self.max_rate = torch.empty(self.num_envs, 3, device=self.device) # Jxx, Jyy, Jzz
+        self.max_prop_speed = torch.empty(self.num_envs, 1, device=self.device) # Jxx, Jyy, Jzz
+        self.prop_speeds = torch.empty(self.num_envs, 4, device=self.device)
         # --- Fixed Parameters ---
-        self.kappa = torch.full((self.num_envs, 1), 0.1, device=self.device)
-        self.max_omega = 1600.0 # TODO: Aucune idee de la valeur, j'ai un peu chercher mais pas sur 
-        # TODO: This needs to be modified 
+        self.kappa = torch.full((self.num_envs, 1), 0.02, device=self.device)
 
-        self.prop_speeds = torch.zeros(self.num_envs, 4, device=self.device)
         self.f_res = torch.zeros(self.num_envs, 3, device=self.device)
         self.tau_res = torch.zeros(self.num_envs, 3, device=self.device)
 
@@ -55,11 +56,20 @@ class DroneDynamics:
         self.lb[env_ids] = 0.17 #torch.empty(len(env_ids), 1, device=self.device).uniform_(0.07, 0.16)
         self.lf[env_ids] = 0.17 #torch.empty(len(env_ids), 1, device=self.device).uniform_(0.07, 0.16)
 
+        self.max_thrust_to_weight[env_ids] = 2.0 #torch.empty(len(env_ids), 1, device=self.device).uniform_(4.0, 15.0)
+        self.max_rate[env_ids, 0] = 12.85 
+        self.max_rate[env_ids, 1] = 12.85 
+        self.max_rate[env_ids, 2] = 12.85 
+        self.max_prop_speed[env_ids] = 838.0 #torch.empty(len(env_ids), 1, device=self.device).uniform_(400.0, 838.0)
+
         self.theta_b[env_ids] = 45 * (math.pi / 180.0) #torch.empty(len(env_ids), 1, device=self.device).uniform_(35, 55) * (math.pi / 180.0)
         self.theta_f[env_ids] = 45 * (math.pi / 180.0) #torch.empty(len(env_ids), 1, device=self.device).uniform_(35, 55) * (math.pi / 180.0)
 
         self.sigma_f[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.6)
         self.sigma_tau[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(0.0, 0.03)
+
+        
+        
 
         # --- Persistent states ---
         self.prop_speeds[env_ids] = 0.0
@@ -67,7 +77,7 @@ class DroneDynamics:
         self.tau_res[env_ids] = 0.0
 
 
-    def compute_forces_and_torques(self, actions, lin_vel_b, dt):
+    def compute_forces_and_torques(self, motors, lin_vel_b, dt):
         """
         Computes total forces and torques in the body frame.
 
@@ -88,12 +98,10 @@ class DroneDynamics:
 
 
         # --- 1. Motor Dynamics (Eq. 5) --- 
-        omega_ss = actions 
+        omega_ss = motors 
         dot_omega = (omega_ss - self.prop_speeds) / self.kappa
         self.prop_speeds += dot_omega * dt
         self.prop_speeds = torch.clamp(self.prop_speeds, min=0.0)
-
-        print("prop_speeds:", self.prop_speeds)
         
         prop_speeds_sq = self.prop_speeds**2
 
@@ -106,8 +114,8 @@ class DroneDynamics:
         # Aerodynamic Drag (Eq. 7) [cite: 60, 61]
         sum_omega = torch.sum(self.prop_speeds, dim=1, keepdim=True)
         f_aero_b = torch.zeros(self.num_envs, 3, device=self.device)
-        f_aero_b[:, 0] = -self.kx * lin_vel_b[:, 0].unsqueeze(-1) * sum_omega
-        f_aero_b[:, 1] = -self.ky * lin_vel_b[:, 1].unsqueeze(-1) * sum_omega # Assuming ky for y-axis
+        f_aero_b[:, 0:1] = -self.kx * lin_vel_b[:, 0].unsqueeze(-1) * sum_omega
+        f_aero_b[:, 1:2] = -self.ky * lin_vel_b[:, 1].unsqueeze(-1) * sum_omega # Assuming ky for y-axis
 
         # Residual Forces (Eq. 10) 
         noise_f = torch.randn_like(self.f_res)
@@ -118,15 +126,15 @@ class DroneDynamics:
         # Propeller Torque (Eq. 8) 
         tau_prop_b = torch.zeros(self.num_envs, 3, device=self.device)
         # completement pas sur faudra verifier LOL
-        tau_prop_b[:, 0] = ( -self.lb * torch.sin(self.theta_b) * self.kl * prop_speeds_sq[:, 0]
-                             -self.lf * torch.sin(self.theta_f) * self.kl * prop_speeds_sq[:, 1]
-                             +self.lb * torch.sin(self.theta_b) * self.kl * prop_speeds_sq[:, 2]
-                             +self.lf * torch.sin(self.theta_f) * self.kl * prop_speeds_sq[:, 3] ).squeeze()
+        tau_prop_b[:, 0] = ( -self.lb * torch.sin(self.theta_b) * self.kl * prop_speeds_sq[:, 0].unsqueeze(1)
+                             -self.lf * torch.sin(self.theta_f) * self.kl * prop_speeds_sq[:, 1].unsqueeze(1)
+                             +self.lb * torch.sin(self.theta_b) * self.kl * prop_speeds_sq[:, 2].unsqueeze(1)
+                             +self.lf * torch.sin(self.theta_f) * self.kl * prop_speeds_sq[:, 3].unsqueeze(1) ).squeeze()
 
-        tau_prop_b[:, 1] = ( +self.lb * torch.cos(self.theta_b) * self.kl * prop_speeds_sq[:, 0]
-                             -self.lf * torch.cos(self.theta_f) * self.kl * prop_speeds_sq[:, 1]
-                             +self.lb * torch.cos(self.theta_b) * self.kl * prop_speeds_sq[:, 2]
-                             -self.lf * torch.cos(self.theta_f) * self.kl * prop_speeds_sq[:, 3] ).squeeze()
+        tau_prop_b[:, 1] = ( +self.lb * torch.cos(self.theta_b) * self.kl * prop_speeds_sq[:, 0].unsqueeze(1)
+                             -self.lf * torch.cos(self.theta_f) * self.kl * prop_speeds_sq[:, 1].unsqueeze(1)
+                             +self.lb * torch.cos(self.theta_b) * self.kl * prop_speeds_sq[:, 2].unsqueeze(1)
+                             -self.lf * torch.cos(self.theta_f) * self.kl * prop_speeds_sq[:, 3].unsqueeze(1) ).squeeze()
         
         
         tau_prop_b[:, 2] = self.kd.squeeze() * (prop_speeds_sq[:, 0] - prop_speeds_sq[:, 1] - prop_speeds_sq[:, 2] + prop_speeds_sq[:, 3])
@@ -148,8 +156,7 @@ class DroneDynamics:
 
     def betaflight_rate_profile(
         self,
-        rc_input,                         # shape: [N, 3]
-        throttle_input,                   # shape: [N]
+        rc_input,                         # shape: [N, 4]
         rc_rate=torch.tensor([1.58, 1.55, 1.00]),
         super_rate=torch.tensor([0.73, 0.73, 0.73]),
         rc_expo=torch.tensor([0.30, 0.30, 0.30]),
@@ -171,7 +178,7 @@ class DroneDynamics:
 
         # Expo shaping
         expo_power = 3
-        rc_input_shaped = rc_input * (rc_input.abs() ** expo_power) * rc_expo + rc_input * (1 - rc_expo)
+        rc_input_shaped = rc_input[:, 1:4] * (rc_input[:, 1:4].abs() ** expo_power) * rc_expo + rc_input[:, 1:4] * (1 - rc_expo)
 
         # Super Expo shaping
         if super_expo_active:
@@ -180,11 +187,12 @@ class DroneDynamics:
         else:
             angular_vel = (((rc_rate * 100) + 27) * rc_input_shaped / 16.0) / 4.1
         
-        total_thrust = (throttle_input + 1) * max_thrust / 2  # [N]
-    
+        total_thrust = (rc_input[:, 0].unsqueeze(1) + 1) * (self.max_thrust_to_weight * self.mass * float(self.g)) / 2  # [N]
 
         angular_vel = torch.clamp(angular_vel, -limit, limit)
-        return angular_vel, total_thrust  # [N, 3]
+        angular_vel = angular_vel.squeeze(1)   
+
+        return torch.cat([total_thrust, angular_vel], dim=1)   
 
 
     def step_body_rates(self, torques_b, omega_b, dt):
@@ -199,7 +207,6 @@ class DroneDynamics:
         Returns:
             new_omega_b (torch.Tensor): [N, 3] body rates mis à jour
         """
-        print("torques_b:", torques_b)
     
         # Moments d’inertie [N,3]
         Jx, Jy, Jz = self.J[:, 0], self.J[:, 1], self.J[:, 2]
@@ -222,7 +229,6 @@ class DroneDynamics:
 
         # Intégration d’Euler
         new_omega_b = omega_b + domega_b * dt
-        print("new_omega_b:", new_omega_b)
 
         return new_omega_b
 
