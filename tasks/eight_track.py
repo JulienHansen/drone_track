@@ -7,7 +7,9 @@ import torch.distributions as D
 import torch.nn.functional as F
 import gymnasium as gym
 from utils.math import *
-from assets.track_generator import * 
+from assets.track_generator import *
+from dynamics.PIDController import PIDController
+from dynamics.drone_dynamics import DroneDynamics
 
 
 import isaaclab.sim as sim_utils
@@ -126,7 +128,7 @@ class EightEnv(DirectRLEnv):
         self.origin = torch.tensor([0., 0., 2.], device=self.device)
         action_dim = gym.spaces.flatdim(self.single_action_space)
         self._actions = torch.zeros(self.num_envs, action_dim, device=self.device)
-        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._net_forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.progress_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
@@ -148,6 +150,8 @@ class EightEnv(DirectRLEnv):
         }
         #self.set_debug_vis(self.cfg.debug_vis)
         #self.draw = _debug_draw.acquire_debug_draw_interface()
+        self.dyn = DroneDynamics(num_envs=self.num_envs, device=self.device)
+        self.pid = PIDController(num_envs=self.num_envs, device=self.device)
 
     def _setup_scene(self):
         # --- robot
@@ -177,17 +181,19 @@ class EightEnv(DirectRLEnv):
         )
         light_cfg.func("/World/global_light", light_cfg) 
 
-
-
     # Currently working on the new physic model i will try to not destroyed abything cut i cannot promise 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+        setpoint = self.dyn.betaflight_rate_profile(rc_input=self.actions)
+        self.pid.reset_setpoint(setpoint=setpoint)
+        process_variable = torch.cat([self._net_forces[:, 0, 2].unsqueeze(1), self._robot.data.root_ang_vel_b], dim=1)
+        motors = self.pid.compute(process_variable=process_variable, dt=self.sim.cfg.dt)
+        self._net_forces[:, 0, :], self._moment[:, 0, :] =  self.dyn.compute_forces_and_torques(motors=motors, lin_vel_b=self._robot.data.root_lin_vel_b, dt=self.sim.cfg.dt)
 
     def _apply_action(self):
-        self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
+        self._robot.set_external_force_and_torque(self._net_forces, self._moment, body_ids=self._body_id)
 
+       
     def _get_observations(self) -> dict:
         drone_pos  = self._robot.data.root_link_pos_w
         drone_quat = self._robot.data.root_link_quat_w
@@ -282,59 +288,74 @@ class EightEnv(DirectRLEnv):
 
             return died, time_out
 
-    def _reset_idx(self, env_ids: torch.tensor | none):
-        if env_ids is None or len(env_ids) == self.num_envs:
-            env_ids = self._robot._ALL_INDICES
+    def _reset_idx(self, env_ids: torch.tensor | None):
+            if env_ids is None or len(env_ids) == self.num_envs:
+                env_ids = self._robot._ALL_INDICES
 
-        extras = {}
-        for key in self._episode_sums.keys():
-            avg_sum = torch.mean(self._episode_sums[key][env_ids])
-            extras[f"episode_reward/{key}"] = avg_sum / self.max_episode_length_s
-            self._episode_sums[key][env_ids] = 0.0
+            extras = {}
+            for key in self._episode_sums.keys():
+                avg_sum = torch.mean(self._episode_sums[key][env_ids])
+                extras[f"episode_reward/{key}"] = avg_sum / self.max_episode_length_s
+                self._episode_sums[key][env_ids] = 0.0
 
-        extras["episode_termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
-        extras["episode_termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        self.extras["log"] = extras
-        self._robot.reset(env_ids)
-        super()._reset_idx(env_ids)
+            extras["episode_termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+            extras["episode_termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+            self.extras["log"] = extras
+            self._robot.reset(env_ids)
+            super()._reset_idx(env_ids)
 
-        if len(env_ids) == self.num_envs:
-            self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+            if len(env_ids) == self.num_envs:
+                self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
-        self._actions[env_ids] = 0.0
+            self._actions[env_ids] = 0.0
 
-        joint_pos = self._robot.data.default_joint_pos[env_ids]
-        joint_vel = self._robot.data.default_joint_vel[env_ids]
-        default_root_state = self._robot.data.default_root_state[env_ids]
+            joint_pos = self._robot.data.default_joint_pos[env_ids]
+            joint_vel = self._robot.data.default_joint_vel[env_ids]
+            default_root_state = self._robot.data.default_root_state[env_ids]
 
-        root_pose = torch.zeros((len(env_ids), 7), device=self.device)
+            root_pose = torch.zeros((len(env_ids), 7), device=self.device)
 
-        num_starts = len(starting_position)
+            num_starts = len(starting_position)
 
-        # choose spawn and set initial current gate to the closest one
-        for i, env_id in enumerate(env_ids):
-            start_id = torch.randint(0, num_starts, (1,), device=self.device).item()
-            sx, sy, sz = starting_position[start_id]
+            for i, env_id in enumerate(env_ids):
+                start_id = torch.randint(0, num_starts, (1,), device=self.device).item()
+                sx, sy, sz = starting_position[start_id]
 
-            # nearest gate id w.r.t. (x,y)
-            diffs = self.gate_pos[:, :2] - torch.tensor([sx, sy], device=self.device)
-            closest_gate_id = torch.argmin(torch.sum(diffs * diffs, dim=1)).item()
+                # nearest gate id w.r.t. (x,y)
+                diffs = self.gate_pos[:, :2] - torch.tensor([sx, sy], device=self.device)
+                closest_gate_id = torch.argmin(torch.sum(diffs * diffs, dim=1)).item()
 
-            yaw = self.gate_yaw[closest_gate_id]
-            qw = torch.cos(yaw / 2)
-            qz = torch.sin(yaw / 2)
-            spawn_quat = torch.tensor([qw, 0.0, 0.0, qz], device=self.device)
+                yaw = self.gate_yaw[closest_gate_id]
+                qw = torch.cos(yaw / 2)
+                qz = torch.sin(yaw / 2)
+                spawn_quat = torch.tensor([qw, 0.0, 0.0, qz], device=self.device)
 
-            root_pose[i, :3] = torch.tensor([sx, sy, sz], device=self.device)
-            root_pose[i, 3:] = spawn_quat
+                root_pose[i, :3] = torch.tensor([sx, sy, sz], device=self.device)
+                root_pose[i, 3:] = spawn_quat
 
-            # set current gate and init signed distance wrt that gate
-            self.progress_buf[env_id] = closest_gate_id
-            gate_pos_i = self.gate_pos[closest_gate_id]
-            gate_norm_i = self.gate_normal[closest_gate_id]
-            self.prev_signed[env_id] = torch.dot(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i, gate_norm_i)
-            self.prev_dist_gate[env_id] = torch.norm(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i)
+                # set current gate and init signed distance wrt that gate
+                self.progress_buf[env_id] = closest_gate_id
+                gate_pos_i = self.gate_pos[closest_gate_id]
+                gate_norm_i = self.gate_normal[closest_gate_id]
+                self.prev_signed[env_id] = torch.dot(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i, gate_norm_i)
+                self.prev_dist_gate[env_id] = torch.norm(torch.tensor([sx, sy, sz], device=self.device) - gate_pos_i)
+                self.dyn.reset(env_ids=env_ids)
+                self.pid.reset(
+                    env_ids=env_ids,
+                    kl=self.dyn.kl,
+                    kd=self.dyn.kd,
+                    J=self.dyn.J,
+                    lb=self.dyn.lb,
+                    lf=self.dyn.lf,
+                    theta_b=self.dyn.theta_b,
+                    theta_f=self.dyn.theta_f,
+                    max_thrust_to_weight=self.dyn.max_thrust_to_weight,
+                    mass=self.dyn.mass,
+                    max_prop_speed=self.dyn.max_prop_speed
+                )
+                    
 
-        self._robot.write_root_pose_to_sim(root_pose, env_ids)
-        self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) 
+            self._robot.write_root_pose_to_sim(root_pose, env_ids)
+            self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+            self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids) 
+

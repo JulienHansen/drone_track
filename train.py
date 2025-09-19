@@ -11,7 +11,7 @@ from collections import deque
 import copy
 
 parser = argparse.ArgumentParser(description='DefenseEnv MARL Training with IPPO Variants')
-parser.add_argument('--num_envs', type=int, default=20, help='Number of parallel environments')
+parser.add_argument('--num_envs', type=int, default=200, help='Number of parallel environments')
 parser.add_argument("--task", type=str, default="DefenseMARL", help="Name of the task.")
 parser.add_argument("--total_timesteps", type=int, default=100000, help="Total simulation steps for training.")
 parser.add_argument("--checkpoint_interval", type=int, default=10000, help="Timesteps between saving checkpoints.")
