@@ -180,15 +180,49 @@ class EightEnv(DirectRLEnv):
             color=(0.75, 0.75, 0.75),     # neutral grey
         )
         light_cfg.func("/World/global_light", light_cfg) 
+# eight_track.py
 
-    # Currently working on the new physic model i will try to not destroyed abything cut i cannot promise 
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        setpoint = self.dyn.betaflight_rate_profile(rc_input=self.actions)
-        self.pid.reset_setpoint(setpoint=setpoint)
-        process_variable = torch.cat([self._net_forces[:, 0, 2].unsqueeze(1), self._robot.data.root_ang_vel_b], dim=1)
-        motors = self.pid.compute(process_variable=process_variable, dt=self.sim.cfg.dt)
-        self._net_forces[:, 0, :], self._moment[:, 0, :] =  self.dyn.compute_forces_and_torques(motors=motors, lin_vel_b=self._robot.data.root_lin_vel_b, dt=self.sim.cfg.dt)
+        
+        # 1. Get the setpoint, which contains desired thrust (N) and desired body rates (rad/s)
+        setpoint = self.dyn.betaflight_rate_profile(rc_input=self._actions)
+        
+        # 2. Extract the desired thrust and rates from the setpoint
+        desired_thrust = setpoint[:, 0].unsqueeze(1)  # [N, 1]
+        desired_rates = setpoint[:, 1:4]             # [N, 3]
+
+        # 3. Get the *actual* measured angular velocity as the process variable for the rate controller
+        measured_rates = self._robot.data.root_ang_vel_b # [N, 3]
+
+        # --- Rate P controller -> desired torques ---
+        rate_err = desired_rates - measured_rates
+        kp_rate = self.pid.kp_rate.to(self.device).unsqueeze(0)  # Use kp from PID class
+        desired_torques = kp_rate * (self.dyn.J * rate_err)    # [N, 3]
+
+        # 4. Combine the direct thrust command and the calculated torques into a wrench vector
+        wrench = torch.cat([desired_thrust, desired_torques], dim=1) # [N, 4]
+
+        # 5. Use the dynamics mixer's inverse to find the required per-motor forces
+        if self.pid.M_pinv is None:
+            self.pid.build_mixer_matrix_and_pinv() # Ensure mixer is built
+        
+        f = torch.matmul(self.pid.M_pinv, wrench.unsqueeze(-1)).squeeze(-1) # [N, 4]
+        
+        # 6. Convert motor forces to motor speeds (omega)
+        f = torch.clamp(f, min=0.0) # Motors can't pull
+        kl4 = self.dyn.kl.expand(-1, 4)
+        motors_omega = torch.sqrt(f / torch.clamp(kl4, min=1e-12))
+        
+        # THIS IS THE CORRECTED LINE: Removed .item()
+        motors_omega = torch.clamp(motors_omega, max=self.dyn.max_prop_speed)
+
+        # 7. Compute the final forces and torques to apply to the simulator
+        self._net_forces[:, 0, :], self._moment[:, 0, :] = self.dyn.compute_forces_and_torques(
+            motors=motors_omega, 
+            lin_vel_b=self._robot.data.root_lin_vel_b, 
+            dt=self.sim.cfg.dt
+        )
 
     def _apply_action(self):
         self._robot.set_external_force_and_torque(self._net_forces, self._moment, body_ids=self._body_id)
